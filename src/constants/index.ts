@@ -1,3 +1,6 @@
+export const MAGICEDEN_CONTRACT_ADDRESS = "0x9A1D00bEd7CD04BCDA516d721A596eb22Aac6834"
+
+
 export const SEAPORT_MIN_ABI = [
   {
     "inputs": [

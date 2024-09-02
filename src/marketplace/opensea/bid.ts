@@ -1,11 +1,10 @@
 import { BigNumber, constants, Contract, ethers, Wallet } from "ethers";
-import { SEAPORT_CONTRACT_ADDRESS, SEAPORT_MIN_ABI, WETH_CONTRACT_ADDRESS, WETH_MIN_ABI } from "../constants";
-import { API_KEY, axiosInstance, limiter } from "../init";
+import { SEAPORT_CONTRACT_ADDRESS, SEAPORT_MIN_ABI, WETH_CONTRACT_ADDRESS, WETH_MIN_ABI } from "../../constants";
+import { API_KEY, axiosInstance, limiter } from "../../init";
+import { ensureAllowance } from "../../functions";
 
-const provider = ethers.getDefaultProvider('mainnet', {
-  timeout: 300000 // 5 minutes
-});
-
+const ALCHEMY_API_KEY = process.env.ALCHEMY_API_KEY
+const provider = new ethers.providers.AlchemyProvider('mainnet', ALCHEMY_API_KEY);
 const SEAPORT_CONTRACT = new ethers.Contract(SEAPORT_CONTRACT_ADDRESS, SEAPORT_MIN_ABI, provider);
 
 const domain = {
@@ -173,13 +172,10 @@ export async function bidOnOpensea(
 
   const wallet = new Wallet(private_key, provider);
   const wethContract = new Contract(WETH_CONTRACT_ADDRESS, WETH_MIN_ABI, wallet);
+  const OPENSEA_CONDUIT = "0x1e0049783f008a0085193e00003d00cd54003c71"
 
-  try {
-    await ensureAllowance(wethContract, wallet.address, offerPrice);
-  } catch (err: any) {
-    console.error('Error ensuring allowance:', err?.reason ?? err?.message);
-    return;
-  }
+  await ensureAllowance(wethContract, wallet.address, offerPrice, OPENSEA_CONDUIT);
+
   // reset consideration list and count
   payload.protocol_data.parameters.consideration = [];
   payload.protocol_data.parameters.totalOriginalConsiderationItems = 2;
@@ -280,7 +276,7 @@ async function submitOfferToOpensea(payload: IPayload) {
         },
         data: JSON.stringify(payload)
       }))
-    console.log(`🎉 OFFER POSTED TO OPENSEA SUCCESSFULLY FOR SLUG: ${payload.criteria.collection.slug.toUpperCase()} 🎉`);
+    console.log(`🎉 OFFER POSTED TO OPENSEA SUCCESSFULLY FOR: ${payload.criteria.collection.slug.toUpperCase()} 🎉`);
   } catch (error: any) {
     console.log("opensea post offer error", error.response.data);
 
@@ -307,22 +303,6 @@ async function buildOffer(buildPayload: any) {
 
   return data
 }
-
-/**
- * Ensures the WETH allowance is sufficient.
- * @param wethContract - The WETH contract instance.
- * @param walletAddress - The wallet address.
- * @param offerPrice - The offer price.
- */
-async function ensureAllowance(wethContract: Contract, walletAddress: string, offerPrice: BigNumber) {
-  const allowance = await wethContract.allowance(walletAddress, "0x1e0049783f008a0085193e00003d00cd54003c71");
-  if (allowance.lt(offerPrice)) {
-    console.log('Insufficient allowance! Approving Weth to Seaport Contract...');
-    const tx = await wethContract.approve("0x1e0049783f008a0085193e00003d00cd54003c71", constants.MaxUint256);
-    await tx.wait();
-  }
-}
-
 
 
 export interface IFee {
