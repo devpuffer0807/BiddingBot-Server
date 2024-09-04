@@ -11,7 +11,7 @@ import { bidOnOpensea, IFee } from "./marketplace/opensea";
 import { bidOnBlur } from "./marketplace/blur/bid";
 import { bidOnMagiceden } from "./marketplace/magiceden";
 import { getCollectionDetails } from "./functions";
-import ClientWebSocketAdapter from "./adapter/websocket";
+// import ClientWebSocketAdapter from "./adapter/websocket";
 
 // Color constants
 const GREEN = '\x1b[32m';
@@ -51,60 +51,59 @@ export const limiter = new Bottleneck({
   minTime: 1 / RATE_LIMIT,
 });
 
-const clientAdapter = new ClientWebSocketAdapter('ws://localhost:8080');
+// const clientAdapter = new ClientWebSocketAdapter('ws://localhost:8080');
 const RETRY_INTERVAL = 5000; // 5 seconds
 
-function connectWebSocket() {
-  clientAdapter.connect();
+// function connectWebSocket() {
+//   clientAdapter.connect();
 
-  clientAdapter.on('open', () => {
-    console.log(GREEN + 'Connected to the WebSocket server' + RESET);
-    subscribeToOpenSeaEvents();
-  });
+//   clientAdapter.on('open', () => {
+//     console.log(GREEN + 'Connected to the WebSocket server' + RESET);
+//     subscribeToOpenSeaEvents();
+//   });
 
-  clientAdapter.on('message', (message) => {
-    const parsedMessage = JSON.parse(message);
-    if (parsedMessage.type === 'marketplaceMessage' &&
-      parsedMessage.marketplace === 'opensea' &&
-      parsedMessage.data.event === 'phx_reply' &&
-      parsedMessage.data.payload.status === 'ok') {
-      console.log(YELLOW + 'Received OK response from OpenSea. Resubscribing...' + RESET);
-      subscribeToOpenSeaEvents();
-    }
-  });
+//   clientAdapter.on('message', (message) => {
+//     const parsedMessage = JSON.parse(message);
+//     if (parsedMessage.type === 'marketplaceMessage' &&
+//       parsedMessage.marketplace === 'opensea' &&
+//       parsedMessage.data.event === 'phx_reply' &&
+//       parsedMessage.data.payload.status === 'ok') {
+//       console.log(YELLOW + 'Received OK response from OpenSea. Resubscribing...' + RESET);
+//       subscribeToOpenSeaEvents();
+//     }
+//   });
 
-  clientAdapter.on('close', () => {
-    console.log(YELLOW + 'WebSocket connection closed. Retrying...' + RESET);
-    setTimeout(connectWebSocket, RETRY_INTERVAL);
-  });
+//   clientAdapter.on('close', () => {
+//     console.log(YELLOW + 'WebSocket connection closed. Retrying...' + RESET);
+//     setTimeout(connectWebSocket, RETRY_INTERVAL);
+//   });
 
-  clientAdapter.on('error', (error) => {
-    console.error(RED + 'WebSocket error:' + RESET, error);
-    // The 'close' event will be triggered after this, which will handle the reconnection
-  });
-}
+//   clientAdapter.on('error', (error) => {
+//     console.error(RED + 'WebSocket error:' + RESET, error);
+//     // The 'close' event will be triggered after this, which will handle the reconnection
+//   });
+// }
 
-function subscribeToOpenSeaEvents() {
-  const customSubscription = {
-    "topic": "collection:boredapeyachtclub",
-    "event": "phx_join",
-    "payload": {},
-    "ref": 0
-  };
-  clientAdapter.sendMessage('opensea', customSubscription);
-}
+// function subscribeToOpenSeaEvents() {
+//   const customSubscription = {
+//     "topic": "collection:boredapeyachtclub",
+//     "event": "phx_join",
+//     "payload": {},
+//     "ref": 0
+//   };
+//   clientAdapter.sendMessage('opensea', customSubscription);
+// }
 
-clientAdapter.on('marketplaceMessage', (marketplace, message) => {
-  console.log(GREEN + `Received message from ${marketplace}:` + RESET, message);
-  // Handle the marketplace message
-});
+// clientAdapter.on('marketplaceMessage', (marketplace, message) => {
+//   console.log(GREEN + `Received message from ${marketplace}:` + RESET, message);
+//   // Handle the marketplace message
+// });
 
-clientAdapter.on('subscriptionConfirmation', (marketplace) => {
-  console.log(BLUE + `Subscribed to ${marketplace}` + RESET);
-});
+// clientAdapter.on('subscriptionConfirmation', (marketplace) => {
+//   console.log(BLUE + `Subscribed to ${marketplace}` + RESET);
+// });
 
-// Initial connection
-connectWebSocket();
+
 
 // WebSocket connection handler
 wss.on('connection', (ws) => {
