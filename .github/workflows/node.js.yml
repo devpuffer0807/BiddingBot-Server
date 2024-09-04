@@ -55,4 +55,4 @@ jobs:
 
       - name: change directory
         run: cd /home/leo/runners/nfttools-websocket/_work/nfttools-websocket/nfttools-websocket
-      - run: pm2 restart 3
+      - run: pm2 restart nfttools-websocket
