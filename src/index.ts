@@ -3,7 +3,7 @@ import { config } from "dotenv";
 import bodyParser from "body-parser";
 import Bottleneck from "bottleneck";
 import cors from "cors";
-import { Server as WebSocketServer } from 'ws';
+import WebSocket, { Server as WebSocketServer } from 'ws';
 import http from 'http';
 import PQueue from "p-queue";
 import { initialize } from "./init";
@@ -11,6 +11,14 @@ import { bidOnOpensea, IFee } from "./marketplace/opensea";
 import { bidOnBlur } from "./marketplace/blur/bid";
 import { bidOnMagiceden } from "./marketplace/magiceden";
 import { getCollectionDetails } from "./functions";
+import ClientWebSocketAdapter from "./adapter/websocket";
+
+// Color constants
+const GREEN = '\x1b[32m';
+const BLUE = '\x1b[34m';
+const YELLOW = '\x1b[33m';
+const RESET = '\x1b[0m';
+const RED = '\x1b[31m';  // Added RED color constant
 
 config();
 
@@ -43,27 +51,80 @@ export const limiter = new Bottleneck({
   minTime: 1 / RATE_LIMIT,
 });
 
+const clientAdapter = new ClientWebSocketAdapter('ws://localhost:8080');
+const RETRY_INTERVAL = 5000; // 5 seconds
 
+function connectWebSocket() {
+  clientAdapter.connect();
+
+  clientAdapter.on('open', () => {
+    console.log(GREEN + 'Connected to the WebSocket server' + RESET);
+    subscribeToOpenSeaEvents();
+  });
+
+  clientAdapter.on('message', (message) => {
+    const parsedMessage = JSON.parse(message);
+    if (parsedMessage.type === 'marketplaceMessage' &&
+      parsedMessage.marketplace === 'opensea' &&
+      parsedMessage.data.event === 'phx_reply' &&
+      parsedMessage.data.payload.status === 'ok') {
+      console.log(YELLOW + 'Received OK response from OpenSea. Resubscribing...' + RESET);
+      subscribeToOpenSeaEvents();
+    }
+  });
+
+  clientAdapter.on('close', () => {
+    console.log(YELLOW + 'WebSocket connection closed. Retrying...' + RESET);
+    setTimeout(connectWebSocket, RETRY_INTERVAL);
+  });
+
+  clientAdapter.on('error', (error) => {
+    console.error(RED + 'WebSocket error:' + RESET, error);
+    // The 'close' event will be triggered after this, which will handle the reconnection
+  });
+}
+
+function subscribeToOpenSeaEvents() {
+  const customSubscription = {
+    "topic": "collection:boredapeyachtclub",
+    "event": "phx_join",
+    "payload": {},
+    "ref": 0
+  };
+  clientAdapter.sendMessage('opensea', customSubscription);
+}
+
+clientAdapter.on('marketplaceMessage', (marketplace, message) => {
+  console.log(GREEN + `Received message from ${marketplace}:` + RESET, message);
+  // Handle the marketplace message
+});
+
+clientAdapter.on('subscriptionConfirmation', (marketplace) => {
+  console.log(BLUE + `Subscribed to ${marketplace}` + RESET);
+});
+
+// Initial connection
+connectWebSocket();
 
 // WebSocket connection handler
-wss.on('connection', (ws: WebSocket) => {
-  console.log('New WebSocket connection');
+wss.on('connection', (ws) => {
+  console.log(GREEN + 'New WebSocket connection' + RESET);
 
-  ws.onmessage = async (event: MessageEvent) => {
+  ws.onmessage = async (event: WebSocket.MessageEvent) => {
     try {
-      const message = JSON.parse(event.data);
-
+      const message = JSON.parse(event.data as string);
+      console.log(BLUE + 'Received WebSocket message:' + RESET, message);
       if (message.endpoint === 'tasks') {
         const tasks: ITask[] = message.data;
         await processTasks(tasks);
       }
     } catch (error) {
-      console.error('Error handling WebSocket message:', error);
+      console.error(RED + 'Error handling WebSocket message:' + RESET, error);
     }
   };
 
   ws.onclose = () => {
-    console.log('WebSocket connection closed');
+    console.log(YELLOW + 'WebSocket connection closed' + RESET);
   };
 });
 
