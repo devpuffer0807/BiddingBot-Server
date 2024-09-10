@@ -10,7 +10,7 @@ import { initialize } from "./init";
 import { bidOnOpensea, IFee } from "./marketplace/opensea";
 import { bidOnBlur } from "./marketplace/blur/bid";
 import { bidOnMagiceden } from "./marketplace/magiceden";
-import { getCollectionDetails } from "./functions";
+import { getCollectionDetails, getCollectionStats } from "./functions";
 // import ClientWebSocketAdapter from "./adapter/websocket";
 
 // Color constants
@@ -51,57 +51,6 @@ export const limiter = new Bottleneck({
   minTime: 1 / RATE_LIMIT,
 });
 
-// const clientAdapter = new ClientWebSocketAdapter('ws://localhost:8080');
-const RETRY_INTERVAL = 5000; // 5 seconds
-
-// function connectWebSocket() {
-//   clientAdapter.connect();
-
-//   clientAdapter.on('open', () => {
-//     console.log(GREEN + 'Connected to the WebSocket server' + RESET);
-//     subscribeToOpenSeaEvents();
-//   });
-
-//   clientAdapter.on('message', (message) => {
-//     const parsedMessage = JSON.parse(message);
-//     if (parsedMessage.type === 'marketplaceMessage' &&
-//       parsedMessage.marketplace === 'opensea' &&
-//       parsedMessage.data.event === 'phx_reply' &&
-//       parsedMessage.data.payload.status === 'ok') {
-//       console.log(YELLOW + 'Received OK response from OpenSea. Resubscribing...' + RESET);
-//       subscribeToOpenSeaEvents();
-//     }
-//   });
-
-//   clientAdapter.on('close', () => {
-//     console.log(YELLOW + 'WebSocket connection closed. Retrying...' + RESET);
-//     setTimeout(connectWebSocket, RETRY_INTERVAL);
-//   });
-
-//   clientAdapter.on('error', (error) => {
-//     console.error(RED + 'WebSocket error:' + RESET, error);
-//     // The 'close' event will be triggered after this, which will handle the reconnection
-//   });
-// }
-
-// function subscribeToOpenSeaEvents() {
-//   const customSubscription = {
-//     "topic": "collection:boredapeyachtclub",
-//     "event": "phx_join",
-//     "payload": {},
-//     "ref": 0
-//   };
-//   clientAdapter.sendMessage('opensea', customSubscription);
-// }
-
-// clientAdapter.on('marketplaceMessage', (marketplace, message) => {
-//   console.log(GREEN + `Received message from ${marketplace}:` + RESET, message);
-//   // Handle the marketplace message
-// });
-
-// clientAdapter.on('subscriptionConfirmation', (marketplace) => {
-//   console.log(BLUE + `Subscribed to ${marketplace}` + RESET);
-// });
 
 
 
@@ -197,9 +146,13 @@ async function processUpdatedTasks(tasksToProcess: ITask[]) {
 }
 
 async function processTask(task: ITask) {
-  // Add your task processing logic here
-  const offerPrice = BigInt(0.01 * 1e18)
   const collectionDetails = await getCollectionDetails(task.slug)
+  const stats = await getCollectionStats(task.slug)
+  const floor_price = stats.total.floor_price
+
+  const offerPriceEth = Number((floor_price * task.minPrice / 100).toFixed(4));
+  const offerPrice = BigInt(Math.ceil(offerPriceEth * 1e18)) // update price
+
 
   const creatorFees: IFee = collectionDetails.creator_fees.null !== undefined
     ? { null: collectionDetails.creator_fees.null }
@@ -254,8 +207,8 @@ interface ITask {
   slug: string;
   selectedWallet: string;
   walletPrivateKey: string;
-  minFloorPricePercentage: number;
-  maxFloorPricePercentage: number;
+  minPrice: number;
+  maxPrice: number;
   selectedMarketplaces: string[];
   running: boolean;
   id: string;
