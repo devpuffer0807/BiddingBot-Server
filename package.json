@@ -7,7 +7,8 @@
 		"build": "tsc",
 		"start": "node dist/index.js",
 		"dev": "nodemon src/index.ts",
-		"ci": "npm install --frozen-lockfile"
+		"ci": "npm install --frozen-lockfile",
+		"dc:redis": "docker compose up -d"
 	},
 	"keywords": [],
 	"author": "",
