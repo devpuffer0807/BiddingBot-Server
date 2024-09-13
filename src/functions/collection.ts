@@ -39,7 +39,8 @@ export async function getCollectionDetails(slug: string) {
       address: collection.editors[0],
       primary_asset_contracts_address: collection.contracts[0].address,
       creator_fees: creator_fees,
-      enforceCreatorFee: enforceCreatorFee
+      enforceCreatorFee: enforceCreatorFee,
+      ...collection
     };
   } catch (error) {
     console.log('🌵💜🐢 error', error);
