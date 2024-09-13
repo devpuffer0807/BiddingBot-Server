@@ -13,12 +13,12 @@ import { getCollectionDetails, getCollectionStats } from "./functions";
 import mongoose from 'mongoose';
 import Task from "./models/task.model";
 
-const GREEN = '\x1b[32m';
-export const BLUE = '\x1b[34m';
-const YELLOW = '\x1b[33m';
-export const RESET = '\x1b[0m';
-const RED = '\x1b[31m';
 export const MAGENTA = '\x1b[35m';
+export const BLUE = '\x1b[34m';
+export const RESET = '\x1b[0m';
+const GREEN = '\x1b[32m';
+const YELLOW = '\x1b[33m';
+const RED = '\x1b[31m';
 
 
 config();
@@ -33,11 +33,23 @@ app.use(cors());
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
+async function fetchCurrentTasks() {
+  try {
+    let tasks = await Task.find({}).lean().exec() as unknown as ITask[]
+    tasks = tasks.map((task) => ({ ...task, _id: task._id.toString() }))
+    currentTasks.push(...tasks);
+    console.log(`Fetched ${tasks.length} current tasks from the database.`);
+  } catch (error) {
+    console.error('Error fetching current tasks:', error);
+  }
+}
+
 async function startServer() {
   try {
     await mongoose.connect(process.env.MONGODB_URI as string);
     console.log('Connected to MongoDB');
 
+    await fetchCurrentTasks(); // Fetch current tasks on server start
     await initialize(); // This will update RATE_LIMIT with the correct value
     server.listen(port, () => {
       console.log(`Magic happening on http://localhost:${port}`);
@@ -150,13 +162,10 @@ async function processTask(task: ITask) {
         throw new Error(`Task with id ${task._id} not found in the database.`);
       }
     }
-
     console.log(BLUE + `Processing task for collection: ${task.contract.slug}` + RESET);
     const collectionDetails = await getCollectionDetails(task.contract.slug);
     const traitBid = task.selectedTraits && Object.keys(task.selectedTraits).length > 0
-
     console.log(GREEN + `Retrieved collection details for ${task.contract.slug}` + RESET);
-
     const stats = await getCollectionStats(task.contract.slug);
     const floor_price = stats.total.floor_price;
     console.log(GREEN + `Current floor price for ${task.contract.slug}: ${floor_price} ETH` + RESET);
@@ -170,7 +179,6 @@ async function processTask(task: ITask) {
       console.log(YELLOW + `Using fixed offer price: ${offerPriceEth} ETH` + RESET);
     }
     const offerPrice = BigInt(Math.ceil(offerPriceEth * 1e18)); // convert to wei
-
     const creatorFees: IFee = collectionDetails.creator_fees.null !== undefined
       ? { null: collectionDetails.creator_fees.null }
       : Object.fromEntries(Object.entries(collectionDetails.creator_fees).map(([key, value]) => [key, Number(value)]));
@@ -181,7 +189,6 @@ async function processTask(task: ITask) {
       console.log(BLUE + `Attempting to place bid on ${marketplace}` + RESET);
       try {
         if (marketplace.toLowerCase() === "opensea") {
-
           if (traitBid && collectionDetails.trait_offers_enabled) {
             const traits = transformOpenseaTraits(task.selectedTraits);
             traits.forEach(trait => {
@@ -205,25 +212,20 @@ async function processTask(task: ITask) {
               collectionDetails.enforceCreatorFee
             );
           }
-
         } else if (marketplace.toLowerCase() === "magiceden") {
           const duration = 15; // minutes
           const currentTime = new Date().getTime();
           const expiration = Math.floor((currentTime + (duration * 60 * 1000)) / 1000);
-
-
           if (traitBid) {
             const traits = Object.entries(task.selectedTraits).flatMap(([key, values]) =>
               values.map(value => ({ attributeKey: key, attributeValue: value }))
             );
-
             traits.forEach(trait => {
               taskQueue.add(() => bidOnMagiceden(WALLET_ADDRESS, contractAddress, 1, offerPrice.toString(), expiration.toString(), WALLET_PRIVATE_KEY, task.contract.slug, trait));
             });
           } else {
             await bidOnMagiceden(WALLET_ADDRESS, contractAddress, 1, offerPrice.toString(), expiration.toString(), WALLET_PRIVATE_KEY, task.contract.slug);
           }
-
           console.log(GREEN + `Successfully placed bid on MagicEden for ${task.contract.slug}` + RESET);
         } else if (marketplace.toLowerCase() === "blur") {
           if (traitBid) {
@@ -240,8 +242,7 @@ async function processTask(task: ITask) {
         console.error(RED + `Error processing task for ${task.contract.slug} on ${marketplace}:` + RESET, error);
       }
     });
-
-    await Promise.all(bidTasks.map(bidTask => taskQueue.add(bidTask))); // Use the single queue for bid tasks
+    await Promise.all(bidTasks.map(bidTask => taskQueue.add(bidTask)));
     console.log(GREEN + `Completed processing task for ${task.contract.slug}` + RESET);
   } catch (error) {
     console.error(RED + `Error processing task for ${task.contract.slug}:` + RESET, error);
@@ -251,12 +252,9 @@ async function processTask(task: ITask) {
 async function updateStatus(task: ITask) {
   const { _id: taskId, running } = task;
   const taskIndex = currentTasks.findIndex(task => task._id === taskId);
-
   const start = !running
-
   if (taskIndex !== -1) {
     currentTasks[taskIndex].running = start;
-
     if (start) {
       console.log(YELLOW + `Updated task ${task.contract.slug} running status to: ${start}` + RESET);
       await processTask(currentTasks[taskIndex])
@@ -273,7 +271,6 @@ async function updateStatus(task: ITask) {
 
 async function updateMultipleTasksStatus(data: { taskIds: string[], running: boolean }) {
   const { taskIds, running } = data;
-
   taskQueue.addAll(taskIds.map(taskId => async () => {
     const taskIndex = currentTasks.findIndex(task => task._id === taskId);
     if (taskIndex !== -1) {
@@ -286,7 +283,6 @@ async function updateMultipleTasksStatus(data: { taskIds: string[], running: boo
       console.log(RED + `Task ${taskId} not found` + RESET);
     }
   }));
-
   await taskQueue.onIdle();
 }
 
@@ -296,11 +292,9 @@ app.get("/", (req, res) => {
 
 function transformBlurTraits(selectedTraits: Record<string, string[]>): { [key: string]: string }[] {
   const result: { [key: string]: string }[] = [];
-
   for (const [traitType, values] of Object.entries(selectedTraits)) {
     for (const value of values) {
       if (value.includes(',')) {
-        // Split the comma-separated values and add them individually
         const subValues = value.split(',');
         for (const subValue of subValues) {
           result.push({ [traitType]: subValue.trim() });
@@ -310,7 +304,6 @@ function transformBlurTraits(selectedTraits: Record<string, string[]>): { [key: 
       }
     }
   }
-
   return result;
 }
 
