@@ -1,24 +1,25 @@
 import express from "express";
 import { config } from "dotenv";
 import bodyParser from "body-parser";
-import Bottleneck from "bottleneck";
 import cors from "cors";
 import WebSocket, { Server as WebSocketServer } from 'ws';
 import http from 'http';
 import PQueue from "p-queue";
-import { initialize } from "./init";
+import { initialize, RATE_LIMIT } from "./init";
 import { bidOnOpensea, IFee } from "./marketplace/opensea";
 import { bidOnBlur } from "./marketplace/blur/bid";
 import { bidOnMagiceden } from "./marketplace/magiceden";
 import { getCollectionDetails, getCollectionStats } from "./functions";
-// import ClientWebSocketAdapter from "./adapter/websocket";
+import mongoose from 'mongoose';
+import Task from "./models/task.model";
 
-// Color constants
 const GREEN = '\x1b[32m';
-const BLUE = '\x1b[34m';
+export const BLUE = '\x1b[34m';
 const YELLOW = '\x1b[33m';
-const RESET = '\x1b[0m';
-const RED = '\x1b[31m';  // Added RED color constant
+export const RESET = '\x1b[0m';
+const RED = '\x1b[31m';
+export const MAGENTA = '\x1b[35m';
+
 
 config();
 
@@ -28,31 +29,33 @@ const port = process.env.PORT || 3003;
 app.use(bodyParser.json());
 app.use(cors());
 
-const WALLET_PRIVATE_KEY = process.env.WALLET_PRIVATE_KEY as string;
-const WALLET_ADDRESS = "0x06c0971e22bd902Fb4DC0cEcb214F1653F1A7B94"
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
-const RATE_LIMIT = 8
+async function startServer() {
+  try {
+    await mongoose.connect(process.env.MONGODB_URI as string);
+    console.log('Connected to MongoDB');
 
-const queue = new PQueue({
-  concurrency: 1.5 * RATE_LIMIT
+    await initialize(); // This will update RATE_LIMIT with the correct value
+    server.listen(port, () => {
+      console.log(`Magic happening on http://localhost:${port}`);
+      console.log(`WebSocket server is running on ws://localhost:${port}`);
+    });
+  } catch (error) {
+    console.error(RED + 'Failed to connect to MongoDB:' + RESET, error);
+    process.exit(1);
+  }
+}
+
+// Call the async start function
+startServer().catch(error => {
+  console.error('Failed to start server:', error);
+  process.exit(1);
 });
 
-// Arrays for tracking tasks
 const currentTasks: ITask[] = [];
-const incomingTasks: ITask[] = [];
-const updatedTasks: ITask[] = [];
-
-config()
-
-export const limiter = new Bottleneck({
-  minTime: 1 / RATE_LIMIT,
-});
-
-
-
 
 // WebSocket connection handler
 wss.on('connection', (ws) => {
@@ -62,9 +65,22 @@ wss.on('connection', (ws) => {
     try {
       const message = JSON.parse(event.data as string);
       console.log(BLUE + 'Received WebSocket message:' + RESET, message);
-      if (message.endpoint === 'tasks') {
-        const tasks: ITask[] = message.data;
-        await processTasks(tasks);
+
+      switch (message.endpoint) {
+        case 'new-task':
+          await processNewTask(message.data);
+          break;
+        case 'updated-task':
+          await processUpdatedTask(message.data);
+          break;
+        case 'toggle-status':
+          await updateStatus(message.data);
+          break;
+        case 'update-multiple-tasks-status':
+          await updateMultipleTasksStatus(message.data);
+          break;
+        default:
+          console.warn(YELLOW + `Unknown endpoint: ${message.endpoint}` + RESET);
       }
     } catch (error) {
       console.error(RED + 'Error handling WebSocket message:' + RESET, error);
@@ -76,140 +92,292 @@ wss.on('connection', (ws) => {
   };
 });
 
-// process tasks in a queue
-async function processTasks(tasks: ITask[]) {
+const taskQueue = new PQueue({ concurrency: 20 }); // Single queue for tasks and bids
+
+async function run() {
   try {
-    console.log('Received tasks:', tasks.map(task => ({ ...task, walletPrivateKey: 'xxxx-xxxx-xxxx-xxxx' })));
+    await Promise.all(
+      currentTasks.map(task =>
+        taskQueue.add(async () => { // Use the single queue here
+          if (task.running) {
+            await processTask(task);
+          }
+        })
+      )
+    );
+  } catch (error) {
+    console.error(RED + 'Error in run function:' + RESET, error);
+  }
+}
 
-    // Clear incomingTasks before processing new tasks
-    incomingTasks.length = 0;
+run()
 
-    const tasksToProcess: ITask[] = [];
+async function processNewTask(task: ITask) {
+  currentTasks.push(task);
+  console.log(GREEN + `Added new task: ${task.contract.slug}` + RESET);
+}
 
-    tasks.forEach(task => {
-      const existingTaskIndex = currentTasks.findIndex(t => t.id === task.id);
+async function processUpdatedTask(task: ITask) {
+  const existingTaskIndex = currentTasks.findIndex(t => t._id === task._id);
 
-      if (existingTaskIndex === -1) {
-        // New task
-        incomingTasks.push(task);
-        currentTasks.push(task);
-        tasksToProcess.push(task);
+  if (existingTaskIndex !== -1) {
+    // Remove old version and add new version
+    currentTasks.splice(existingTaskIndex, 1, task);
+    console.log(YELLOW + `Updated existing task: ${task.contract.slug}` + RESET);
+  } else {
+    console.log(RED + `Attempted to update non-existent task: ${task.contract.slug}` + RESET);
+  }
+
+  currentTasks.push(task)
+}
+
+const taskCache = new Map<string, { WALLET_ADDRESS: string, WALLET_PRIVATE_KEY: string }>();
+
+async function processTask(task: ITask) {
+  try {
+    let cachedData = taskCache.get(task._id);
+    let WALLET_ADDRESS, WALLET_PRIVATE_KEY;
+
+    if (cachedData) {
+      ({ WALLET_ADDRESS, WALLET_PRIVATE_KEY } = cachedData);
+    } else {
+      const dbTask = await Task.findOne({ _id: task._id }).exec();
+      if (dbTask) {
+        WALLET_ADDRESS = dbTask.wallet.address as string;
+        WALLET_PRIVATE_KEY = dbTask.wallet.privateKey as string;
+        taskCache.set(task._id, { WALLET_ADDRESS, WALLET_PRIVATE_KEY });
       } else {
-        const existingTask = currentTasks[existingTaskIndex];
-        if (JSON.stringify(existingTask) !== JSON.stringify(task)) {
-          // Updated task
-          updatedTasks.push(task);
-          currentTasks[existingTaskIndex] = task;
-          tasksToProcess.push(task);
+        throw new Error(`Task with id ${task._id} not found in the database.`);
+      }
+    }
+
+    console.log(BLUE + `Processing task for collection: ${task.contract.slug}` + RESET);
+    const collectionDetails = await getCollectionDetails(task.contract.slug);
+    const traitBid = task.selectedTraits && Object.keys(task.selectedTraits).length > 0
+
+    console.log(GREEN + `Retrieved collection details for ${task.contract.slug}` + RESET);
+
+    const stats = await getCollectionStats(task.contract.slug);
+    const floor_price = stats.total.floor_price;
+    console.log(GREEN + `Current floor price for ${task.contract.slug}: ${floor_price} ETH` + RESET);
+    const traitBidQueue = new PQueue({ concurrency: 20 });
+
+    let offerPriceEth: number;
+    if (task.bidPrice.minType === "percentage") {
+      offerPriceEth = Number((floor_price * task.bidPrice.min / 100).toFixed(4));
+      console.log(YELLOW + `Calculated offer price: ${offerPriceEth} ETH (${task.bidPrice.min}% of floor price)` + RESET);
+    } else {
+      offerPriceEth = task.bidPrice.min;
+      console.log(YELLOW + `Using fixed offer price: ${offerPriceEth} ETH` + RESET);
+    }
+    const offerPrice = BigInt(Math.ceil(offerPriceEth * 1e18)); // convert to wei
+
+    const creatorFees: IFee = collectionDetails.creator_fees.null !== undefined
+      ? { null: collectionDetails.creator_fees.null }
+      : Object.fromEntries(Object.entries(collectionDetails.creator_fees).map(([key, value]) => [key, Number(value)]));
+
+    const contractAddress = collectionDetails.primary_asset_contracts_address;
+
+    const bidTasks = task.selectedMarketplaces.map(marketplace => async () => {
+      console.log(BLUE + `Attempting to place bid on ${marketplace}` + RESET);
+      try {
+        if (marketplace.toLowerCase() === "opensea") {
+
+          if (traitBid && collectionDetails.trait_offers_enabled) {
+            const traits = transformOpenseaTraits(task.selectedTraits);
+            traits.forEach(trait => {
+              traitBidQueue.add(() => bidOnOpensea(
+                WALLET_ADDRESS,
+                WALLET_PRIVATE_KEY,
+                task.contract.slug,
+                offerPrice,
+                creatorFees,
+                collectionDetails.enforceCreatorFee,
+                JSON.stringify(trait)
+              ));
+            });
+          } else {
+            await bidOnOpensea(
+              WALLET_ADDRESS,
+              WALLET_PRIVATE_KEY,
+              task.contract.slug,
+              offerPrice,
+              creatorFees,
+              collectionDetails.enforceCreatorFee
+            );
+          }
+
+        } else if (marketplace.toLowerCase() === "magiceden") {
+          const duration = 15; // minutes
+          const currentTime = new Date().getTime();
+          const expiration = Math.floor((currentTime + (duration * 60 * 1000)) / 1000);
+
+
+          if (traitBid) {
+            const traits = Object.entries(task.selectedTraits).flatMap(([key, values]) =>
+              values.map(value => ({ attributeKey: key, attributeValue: value }))
+            );
+
+            traits.forEach(trait => {
+              traitBidQueue.add(() => bidOnMagiceden(WALLET_ADDRESS, contractAddress, 1, offerPrice.toString(), expiration.toString(), WALLET_PRIVATE_KEY, task.contract.slug, trait));
+            });
+          } else {
+            await bidOnMagiceden(WALLET_ADDRESS, contractAddress, 1, offerPrice.toString(), expiration.toString(), WALLET_PRIVATE_KEY, task.contract.slug);
+          }
+
+          console.log(GREEN + `Successfully placed bid on MagicEden for ${task.contract.slug}` + RESET);
+        } else if (marketplace.toLowerCase() === "blur") {
+          if (traitBid) {
+            const traits = transformBlurTraits(task.selectedTraits)
+            traits.forEach(trait => {
+              traitBidQueue.add(() => bidOnBlur(WALLET_ADDRESS, WALLET_PRIVATE_KEY, contractAddress, offerPrice, task.contract.slug, JSON.stringify(trait)));
+            });
+          } else {
+            await bidOnBlur(WALLET_ADDRESS, WALLET_PRIVATE_KEY, contractAddress, offerPrice, task.contract.slug);
+            console.log(GREEN + `Successfully placed bid on Blur for ${task.contract.slug}` + RESET);
+          }
         }
-        incomingTasks.push(task); // Add to incomingTasks if it exists
+      } catch (error) {
+        console.error(RED + `Error processing task for ${task.contract.slug} on ${marketplace}:` + RESET, error);
       }
     });
 
-    // Remove tasks from currentTasks that are not in incomingTasks
-    for (let i = currentTasks.length - 1; i >= 0; i--) {
-      if (!incomingTasks.some(task => task.id === currentTasks[i].id)) {
-        currentTasks.splice(i, 1);
-      }
-    }
+    await Promise.all(bidTasks.map(bidTask => taskQueue.add(bidTask))); // Use the single queue for bid tasks
+    console.log(GREEN + `Completed processing task for ${task.contract.slug}` + RESET);
+  } catch (error) {
+    console.error(RED + `Error processing task for ${task.contract.slug}:` + RESET, error);
+  }
+}
 
-    console.log('Updated tasks:', updatedTasks.map(task => ({ ...task, walletPrivateKey: 'xxxx-xxxx-xxxx-xxxx' })));
+async function updateStatus(task: ITask) {
+  const { _id: taskId, running } = task;
+  const taskIndex = currentTasks.findIndex(task => task._id === taskId);
 
-    if (tasksToProcess.length > 0) {
-      await processUpdatedTasks(tasksToProcess);
+  const start = !running
+
+  if (taskIndex !== -1) {
+    currentTasks[taskIndex].running = start;
+
+    if (start) {
+      console.log(YELLOW + `Updated task ${task.contract.slug} running status to: ${start}` + RESET);
+      await processTask(currentTasks[taskIndex])
     } else {
-      console.log('No new or updated tasks to process');
+      console.log(YELLOW + `Stopped processing task ${task.contract.slug}` + RESET);
     }
-
-  } catch (error) {
-    console.error('Error processing tasks:', error);
+  } else {
+    currentTasks.push(task)
+    if (start) {
+      await processTask(task)
+    }
   }
 }
 
-// process updated tasks
-async function processUpdatedTasks(tasksToProcess: ITask[]) {
-  try {
-    // Process tasks using queue.addAll
-    await queue.addAll(
-      tasksToProcess.map((task) => async () => {
-        await processTask(task);
-      })
-    );
+async function updateMultipleTasksStatus(data: { taskIds: string[], running: boolean }) {
+  const { taskIds, running } = data;
+  const taskQueue = new PQueue({ concurrency: 20 });
 
-    // Clear updatedTasks after processing
-    updatedTasks.length = 0;
-
-    console.log('Finished processing tasks');
-  } catch (error) {
-    console.error('Error processing tasks:', error);
-  }
-}
-
-async function processTask(task: ITask) {
-  const collectionDetails = await getCollectionDetails(task.slug)
-  const stats = await getCollectionStats(task.slug)
-  const floor_price = stats.total.floor_price
-
-  const offerPriceEth = Number((floor_price * task.minPrice / 100).toFixed(4));
-  const offerPrice = BigInt(Math.ceil(offerPriceEth * 1e18)) // update price
-
-
-  const creatorFees: IFee = collectionDetails.creator_fees.null !== undefined
-    ? { null: collectionDetails.creator_fees.null }
-    : Object.fromEntries(Object.entries(collectionDetails.creator_fees).map(([key, value]) => [key, Number(value)]));
-
-  const contractAddress = collectionDetails.primary_asset_contracts_address
-
-  for (const marketplace of task.selectedMarketplaces) {
-    if (marketplace.toLowerCase() === "opensea") {
-      await bidOnOpensea(
-        WALLET_ADDRESS,
-        WALLET_PRIVATE_KEY,
-        task.slug,
-        offerPrice,
-        creatorFees,
-        collectionDetails.enforceCreatorFee
-      );
+  taskQueue.addAll(taskIds.map(taskId => async () => {
+    const taskIndex = currentTasks.findIndex(task => task._id === taskId);
+    if (taskIndex !== -1) {
+      currentTasks[taskIndex].running = running;
+      if (running) {
+        await processTask(currentTasks[taskIndex]);
+      }
+      console.log(YELLOW + `Updated task ${currentTasks[taskIndex].contract.slug} running status to: ${running}` + RESET);
+    } else {
+      console.log(RED + `Task ${taskId} not found` + RESET);
     }
-    else if (marketplace.toLowerCase() === "magiceden") {
-      const duration = 15 // minutes
-      const currentTime = new Date().getTime();
-      const expiration = Math.floor((currentTime + (duration * 60 * 1000)) / 1000);
+  }));
 
-      await bidOnMagiceden(WALLET_ADDRESS, contractAddress, 1, offerPrice.toString(), expiration.toString(), WALLET_PRIVATE_KEY, task.slug)
-
-    } else if (marketplace.toLowerCase() === "blur") {
-      await bidOnBlur(WALLET_ADDRESS, WALLET_PRIVATE_KEY, contractAddress, offerPrice, task.slug)
-    }
-  }
+  await taskQueue.onIdle();
 }
 
 app.get("/", (req, res) => {
   res.json({ message: "Welcome to the NFTTools bidding bot server! Let's make magic happen hello world! 🚀🚀🚀" });
 });
 
+function transformBlurTraits(selectedTraits: Record<string, string[]>): { [key: string]: string }[] {
+  const result: { [key: string]: string }[] = [];
 
-async function startServer() {
-  await initialize();
-  server.listen(port, () => {
-    console.log(`Magic happening on http://localhost:${port}`);
-    console.log(`WebSocket server is running on ws://localhost:${port}`);
-  });
+  for (const [traitType, values] of Object.entries(selectedTraits)) {
+    for (const value of values) {
+      if (value.includes(',')) {
+        // Split the comma-separated values and add them individually
+        const subValues = value.split(',');
+        for (const subValue of subValues) {
+          result.push({ [traitType]: subValue.trim() });
+        }
+      } else {
+        result.push({ [traitType]: value.trim() });
+      }
+    }
+  }
+
+  return result;
 }
 
-// Call the async start function
-startServer().catch(error => {
-  console.error('Failed to start server:', error);
-  process.exit(1);
-});
 
-interface ITask {
-  slug: string;
-  selectedWallet: string;
-  walletPrivateKey: string;
-  minPrice: number;
-  maxPrice: number;
+function transformOpenseaTraits(selectedTraits: Record<string, string[]>): { type: string; value: string }[] {
+  const result: { type: string; value: string }[] = [];
+
+  for (const [traitType, values] of Object.entries(selectedTraits)) {
+    for (const value of values) {
+      if (value.includes(',')) {
+        // Split the comma-separated values and add them individually
+        const subValues = value.split(',');
+        for (const subValue of subValues) {
+          result.push({ type: traitType, value: subValue.trim() });
+        }
+      } else {
+        result.push({ type: traitType, value: value.trim() });
+      }
+    }
+  }
+
+  return result;
+}
+
+
+export interface ITask {
+  _id: string;
+  contract: {
+    slug: string;
+    contractAddress: string;
+  };
+  wallet: {
+    address: string;
+    privateKey: string;
+  };
   selectedMarketplaces: string[];
   running: boolean;
-  id: string;
+  tags: { name: string; color: string }[];
+  selectedTraits: Record<string, string[]>;
+  traits: {
+    categories: Record<string, string>;
+    counts: Record<string, Record<string, number>>;
+  };
+  outbidOptions: {
+    outbid: boolean;
+    blurOutbidMargin: number | null;
+    openseaOutbidMargin: number | null;
+    magicedenOutbidMargin: number | null;
+    counterbid: boolean;
+  };
+  bidPrice: {
+    min: number;
+    max: number | null;
+    minType: "percentage" | "eth";
+    maxType: "percentage" | "eth";
+  };
+  stopOptions: {
+    minFloorPrice: number | null;
+    maxFloorPrice: number | null;
+    minTraitPrice: number | null;
+    maxTraitPrice: number | null;
+    maxPurchase: number | null;
+    pauseAllBids: boolean;
+    stopAllBids: boolean;
+    cancelAllBids: boolean;
+    triggerStopOptions: boolean;
+  };
 }
