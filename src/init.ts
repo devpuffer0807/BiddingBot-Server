@@ -4,14 +4,13 @@ import axiosRetry, { IAxiosRetryConfig } from "axios-retry";
 
 let limiter: Bottleneck;
 let axiosInstance: AxiosInstance;
-let API_KEY: string
+let API_KEY: string;
+let RATE_LIMIT: number = 20;
 
 
 async function fetchRateLimitFromDatabase() {
-  // TODO: Implement actual database fetch
-  return { rateLimit: 8, apiKey: process.env.API_KEY as string }; // Default value for now
+  return { rateLimit: 24, apiKey: "9669db1f-485e-4cbf-8041-2c886a5ca440" }; // Default value for now
 }
-
 
 const retryConfig: IAxiosRetryConfig = {
   retries: 3,
@@ -37,7 +36,6 @@ const retryConfig: IAxiosRetryConfig = {
 async function initialize() {
   // TODO: Replace this with actual database fetch
 
-
   axiosInstance = axios.create({
     timeout: 300000,
   });
@@ -49,8 +47,9 @@ async function initialize() {
 
   axiosRetry(axiosInstance, retryConfig);
   API_KEY = apiKey
+  RATE_LIMIT = rateLimit
 
   console.log(`Limiter initialized with rate limit: ${rateLimit} requests per second`);
 }
 
-export { limiter, initialize, axiosInstance, API_KEY };
+export { limiter, initialize, axiosInstance, API_KEY, RATE_LIMIT };
