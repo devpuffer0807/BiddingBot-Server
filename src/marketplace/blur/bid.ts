@@ -45,12 +45,6 @@ export async function bidOnBlur(
     }
   } : basePayload;
 
-  if (traits) {
-    console.log('\x1b[32m%s\x1b[0m', '--------------------------------------------------------');
-    console.log('\x1b[32m%s\x1b[0m', 'INITIATE BLUR TRAIT BIDDING.......');
-    console.log('\x1b[32m%s\x1b[0m', '--------------------------------------------------------');
-  }
-
   let build: any;
   try {
     if (!accessToken) {
@@ -83,7 +77,7 @@ export async function bidOnBlur(
   try {
 
 
-    await submitBidToBlur(BLUR_API_URL, accessToken, wallet_address, submitPayload, slug);
+    await submitBidToBlur(BLUR_API_URL, accessToken, wallet_address, submitPayload, slug, traits);
 
 
   } catch (error: any) {
@@ -177,7 +171,8 @@ async function submitBidToBlur(
   accessToken: string,
   walletAddress: string,
   submitPayload: SubmitPayload,
-  slug: string
+  slug: string,
+  traits?: string
 ) {
   try {
     const { data: offers } = await limiter.schedule(() =>
@@ -194,10 +189,12 @@ async function submitBidToBlur(
       })
     );
 
+    const successMessage = traits ? `🎉 TRAIT OFFER POSTED TO BLUR SUCCESSFULLY FOR: ${slug.toUpperCase()} 🎉 TRAIT: ${traits}` : `🎉 OFFER POSTED TO BLUR SUCCESSFULLY FOR: ${slug.toUpperCase()} 🎉`
+
     if (offers.errors) {
       console.error('Error:', JSON.stringify(offers.errors));
     } else {
-      console.log(`🎉 OFFER POSTED TO BLUR SUCCESSFULLY FOR: ${slug.toUpperCase()} 🎉`);
+      console.log("\x1b[33m", successMessage);
     }
   } catch (error: any) {
     console.error("Error submitting bid:", error.response?.data || error.message);
