@@ -3,6 +3,7 @@ import { API_KEY, axiosInstance, limiter } from "../../init";
 import { MAGICEDEN_CONTRACT_ADDRESS, WETH_CONTRACT_ADDRESS, WETH_MIN_ABI } from "../../constants";
 import { config } from "dotenv";
 import { ensureAllowance } from "../../functions";
+import { MAGENTA, RESET } from "../..";
 
 config()
 const ALCHEMY_API_KEY = process.env.ALCHEMY_API_KEY
@@ -17,8 +18,8 @@ const provider = new ethers.providers.AlchemyProvider('mainnet', ALCHEMY_API_KEY
  * @param expirationTime - The expiration time of the bid.
  * @param privateKey - The private key of the maker's wallet.
  * @param slug - Collection slug
+ * @param traits - Optional traits for the offer.
  */
-
 
 export async function bidOnMagiceden(
   maker: string,
@@ -27,8 +28,10 @@ export async function bidOnMagiceden(
   weiPrice: string,
   expirationTime: string,
   privateKey: string,
-  slug: string
+  slug: string,
+  trait?: Trait,
 ) {
+
 
   const wallet = new Wallet(privateKey, provider);
   const wethContract = new Contract(WETH_CONTRACT_ADDRESS,
@@ -37,21 +40,86 @@ export async function bidOnMagiceden(
   const offerPrice = BigNumber.from(weiPrice);
   await ensureAllowance(wethContract, wallet.address, offerPrice, MAGICEDEN_CONTRACT_ADDRESS);
 
-  try {
-    const order = await createBidData(maker, collection, quantity, weiPrice, expirationTime);
+  const order = await createBidData(maker, collection, quantity, weiPrice, expirationTime, trait);
 
-    const wallet = new Wallet(privateKey, provider);
+  if (order) {
+    const res = await submitSignedOrderData(order, wallet, slug, trait)
+    return res
+  }
+  return order
 
-    if (order) {
-      const res = await submitSignedOrderData(order, wallet, slug)
-      return res
+}
+
+/**
+ * Creates bid data for Magic Eden.
+ * @param maker - The maker of the bid.
+ * @param collection - The collection to bid on.
+ * @param quantity - The quantity to bid.
+ * @param weiPrice - The price in wei.
+ * @param expirationTime - The expiration time of the bid.
+ * @param traits - Optional traits for the offer.
+ * @returns The bid data.
+ */
+async function createBidData(
+  maker: string,
+  collection: string,
+  quantity: number,
+  weiPrice: string,
+  expirationTime: string,
+  trait?: Trait
+) {
+
+  const options = trait ? {
+    "seaport-v1.6": {
+      "useOffChainCancellation": true,
+      "conduitKey": "0x87328c9043E7BF343695554EAAF5a8892f7205e3000000000000000000000000"
     }
-    return order
-  } catch (error: any) {
-    console.log(error.response.data);
+  } : {
+    "payment-processor-v2": {
+      useOffChainCancellation: true
+    }
+  }
 
+  const orderKind = trait ? "seaport-v1.6" : "payment-processor-v2"
+  const params = [
+    {
+      collection: collection,
+      currency: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+      quantity: quantity,
+      weiPrice: weiPrice,
+      expirationTime: expirationTime,
+      orderKind: orderKind,
+      orderbook: "reservoir",
+      options: options,
+      automatedRoyalties: true,
+      ...(trait ? { attributeKey: trait.attributeKey, attributeValue: trait.attributeValue } : {})
+    }
+  ];
+
+  const data = {
+    maker: maker,
+    source: "magiceden.io",
+    params: params
+  };
+
+  let response: any;
+  try {
+    const { data: order } = await limiter.schedule(() => axiosInstance.post<CreateBidData>('https://api.nfttools.website/magiceden/v3/rtp/ethereum/execute/bid/v5', data, {
+      headers: {
+        'content-type': 'application/json',
+        'X-NFT-API-Key': API_KEY
+      }
+    }));
+    response = order
+    return order;
+
+  } catch (error: any) {
+    console.log(error);
+  } finally {
+    return response
   }
 }
+
 
 /**
  * Signs the order data.
@@ -59,11 +127,48 @@ export async function bidOnMagiceden(
  * @param signData - The data to be signed.
  * @returns The signature.
  */
-async function signOrderData(wallet: ethers.Wallet, signData: any): Promise<string> {
+async function signOrderData(wallet: ethers.Wallet, signData: any, trait?: Trait): Promise<string> {
+  const domain = trait ? {
+    "name": "Seaport",
+    "version": "1.6",
+    "chainId": 1,
+    "verifyingContract": "0x0000000000000068f116a894984e2db1123eb395"
+  } : signData.domain
+
+  const types = trait ? {
+    "OrderComponents": [
+      { "name": "offerer", "type": "address" },
+      { "name": "zone", "type": "address" },
+      { "name": "offer", "type": "OfferItem[]" },
+      { "name": "consideration", "type": "ConsiderationItem[]" },
+      { "name": "orderType", "type": "uint8" },
+      { "name": "startTime", "type": "uint256" },
+      { "name": "endTime", "type": "uint256" },
+      { "name": "zoneHash", "type": "bytes32" },
+      { "name": "salt", "type": "uint256" },
+      { "name": "conduitKey", "type": "bytes32" },
+      { "name": "counter", "type": "uint256" }
+    ],
+    "OfferItem": [
+      { "name": "itemType", "type": "uint8" },
+      { "name": "token", "type": "address" },
+      { "name": "identifierOrCriteria", "type": "uint256" },
+      { "name": "startAmount", "type": "uint256" },
+      { "name": "endAmount", "type": "uint256" }
+    ],
+    "ConsiderationItem": [
+      { "name": "itemType", "type": "uint8" },
+      { "name": "token", "type": "address" },
+      { "name": "identifierOrCriteria", "type": "uint256" },
+      { "name": "startAmount", "type": "uint256" },
+      { "name": "endAmount", "type": "uint256" },
+      { "name": "recipient", "type": "address" }
+    ]
+  } : signData.types
   try {
     const signature = await wallet._signTypedData(
-      signData.domain,
-      signData.types,
+      domain,
+      types,
       signData.value
     );
     return signature;
@@ -80,13 +185,16 @@ async function signOrderData(wallet: ethers.Wallet, signData: any): Promise<stri
  * @param slug - Collection slug
  * @returns The response from the API.
  */
-async function sendSignedOrderData(signature: string, data: SignedData, slug: string) {
-  const signEndpoint = "https://api.nfttools.website/magiceden/v3/rtp/ethereum/order/v4";
+async function sendSignedOrderData(signature: string, data: SignedData, slug: string, trait?: Trait) {
+
+  const endpoint = trait
+    ? "https://api.nfttools.website/magiceden/v3/rtp/ethereum/order/v3"
+    : "https://api.nfttools.website/magiceden/v3/rtp/ethereum/order/v4"
 
   try {
     const { data: offerResponse } = await limiter.schedule(() =>
       axiosInstance.post(
-        `${signEndpoint}?signature=${encodeURIComponent(signature)}`,
+        `${endpoint}?signature=${encodeURIComponent(signature)}`,
         data,
         {
           headers: {
@@ -97,10 +205,14 @@ async function sendSignedOrderData(signature: string, data: SignedData, slug: st
       )
     );
 
-    console.log(`🎉 OFFER POSTED TO MAGICEDEN SUCCESSFULLY FOR: ${slug.toUpperCase()} 🎉`);
+    const successMessage = trait ? `🎉 TRAIT OFFER POSTED TO MAGICEDEN SUCCESSFULLY FOR: ${slug.toUpperCase()} TRAIT: ${JSON.stringify(trait)} 🎉` : `🎉 OFFER POSTED TO MAGICEDEN SUCCESSFULLY FOR: ${slug.toUpperCase()} 🎉`
+
+    console.log(MAGENTA, successMessage, RESET);
 
     return offerResponse;
   } catch (axiosError: any) {
+    console.log("something went wrong here");
+
     if (axiosError.response) {
       // Server responded with a status other than 2xx
       console.error('Error response from server:', axiosError.response.data);
@@ -119,95 +231,75 @@ async function sendSignedOrderData(signature: string, data: SignedData, slug: st
  * Submits signed order data.
  * @param order - The order data.
  * @param wallet - The wallet of the offerer.
+ * @param trait - Optional Trait
  * @param slug - Collection slug
 
  */
-export async function submitSignedOrderData(order: CreateBidData, wallet: ethers.Wallet, slug: string) {
+export async function submitSignedOrderData(order: CreateBidData, wallet: ethers.Wallet, slug: string, trait?: Trait) {
   const signData = order?.steps
     ?.find((step) => step.id === "order-signature")
     ?.items?.[0]?.data?.sign;
 
-  if (signData) {
-    try {
-      const signature = await signOrderData(wallet, signData);
-      const payload = signData.value;
-      const { buyer, ...rest } = payload;
+  try {
+    const signature = await signOrderData(wallet, signData, trait);
+    let data: any;
 
-      const data = {
-        items: [
-          {
-            order: {
-              kind: "payment-processor-v2",
-              data: {
-                kind: "collection-offer-approval",
-                sellerOrBuyer: buyer,
-                ...rest,
-                r: "0x0000000000000000000000000000000000000000000000000000000000000000",
-                s: "0x0000000000000000000000000000000000000000000000000000000000000000",
-                v: 0,
-              },
-            },
-            orderbook: "reservoir",
-          },
-        ],
-        source: "magiceden.io",
-      };
+    if (trait) {
+      const orderSignatureStep = order.steps.find(step => step.id === "order-signature") as any;
+      const attributeStep = order.steps.find(step => step.id === "order-signature") as any
+      const attribute = attributeStep?.items[0]?.data?.post?.body?.attribute;
+      const valueObject = orderSignatureStep.items[0].data.sign.value;
 
-      return await sendSignedOrderData(signature, data, slug);
-    } catch (error: any) {
-      console.error('Error in submitSignedOrderData:', error.message);
-    }
-  } else {
-    console.error('Sign data not found in order steps.');
-  }
-}
-
-/**
- * Creates bid data for Magic Eden.
- * @param maker - The maker of the bid.
- * @param collection - The collection to bid on.
- * @param quantity - The quantity to bid.
- * @param weiPrice - The price in wei.
- * @param expirationTime - The expiration time of the bid.
- * @returns The bid data.
- */
-async function createBidData(
-  maker: string,
-  collection: string,
-  quantity: number,
-  weiPrice: string,
-  expirationTime: string
-) {
-  const data = {
-    maker: maker,
-    source: "magiceden.io",
-    params: [
-      {
-        collection: collection,
-        currency: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
-        quantity: quantity,
-        weiPrice: weiPrice,
-        expirationTime: expirationTime,
-        orderKind: "payment-processor-v2",
-        orderbook: "reservoir",
-        options: {
-          "payment-processor-v2": {
-            useOffChainCancellation: true
+      data = {
+        "order": {
+          "kind": "seaport-v1.6",
+          "data": {
+            "kind": "token-list",
+            ...valueObject,
+            "signature": "0x0000000000000000000000000000000000000000000000000000000000000000"
           }
         },
-        automatedRoyalties: true
+        "attribute": {
+          "collection": attribute.collection,
+          "key": trait.attributeKey,
+          "value": trait.attributeValue
+        },
+        "isNonFlagged": false,
+        "orderbook": "reservoir",
+        "source": "magiceden.io"
+      };
+    } else {
+      if (signData) {
+        const payload = signData.value;
+        const { buyer, ...rest } = payload;
+        data = {
+          items: [
+            {
+              order: {
+                kind: "payment-processor-v2",
+                data: {
+                  kind: "collection-offer-approval",
+                  sellerOrBuyer: buyer,
+                  ...rest,
+                  r: "0x0000000000000000000000000000000000000000000000000000000000000000",
+                  s: "0x0000000000000000000000000000000000000000000000000000000000000000",
+                  v: 0,
+                },
+              },
+              orderbook: "reservoir",
+            },
+          ],
+          source: "magiceden.io",
+        };
+      } else {
+        console.error('Sign data not found in order steps.');
       }
-    ]
-  };
-
-  const { data: order } = await limiter.schedule(() => axiosInstance.post<CreateBidData>('https://api.nfttools.website/magiceden/v3/rtp/ethereum/execute/bid/v5', data, {
-    headers: {
-      'content-type': 'application/json',
-      'X-NFT-API-Key': API_KEY
     }
-  }));
+    return await sendSignedOrderData(signature, data, slug, trait);
+  } catch (error: any) {
+    console.error('Error in submitSignedOrderData:', error.response);
+  }
 
-  return order;
 }
 
 interface StepItem {
@@ -337,3 +429,8 @@ interface SignedData {
   items: Item[];
   source: string;
 }
+
+interface Trait {
+  attributeKey: string;
+  attributeValue: string;
+};
