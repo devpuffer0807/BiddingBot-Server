@@ -5,7 +5,7 @@ import cors from "cors";
 import WebSocket, { Server as WebSocketServer } from 'ws';
 import http from 'http';
 import PQueue from "p-queue";
-import { initialize, RATE_LIMIT } from "./init";
+import { initialize } from "./init";
 import { bidOnOpensea, IFee } from "./marketplace/opensea";
 import { bidOnBlur } from "./marketplace/blur/bid";
 import { bidOnMagiceden } from "./marketplace/magiceden";
@@ -160,7 +160,6 @@ async function processTask(task: ITask) {
     const stats = await getCollectionStats(task.contract.slug);
     const floor_price = stats.total.floor_price;
     console.log(GREEN + `Current floor price for ${task.contract.slug}: ${floor_price} ETH` + RESET);
-    const traitBidQueue = new PQueue({ concurrency: 20 });
 
     let offerPriceEth: number;
     if (task.bidPrice.minType === "percentage") {
@@ -186,7 +185,7 @@ async function processTask(task: ITask) {
           if (traitBid && collectionDetails.trait_offers_enabled) {
             const traits = transformOpenseaTraits(task.selectedTraits);
             traits.forEach(trait => {
-              traitBidQueue.add(() => bidOnOpensea(
+              taskQueue.add(() => bidOnOpensea(
                 WALLET_ADDRESS,
                 WALLET_PRIVATE_KEY,
                 task.contract.slug,
@@ -219,7 +218,7 @@ async function processTask(task: ITask) {
             );
 
             traits.forEach(trait => {
-              traitBidQueue.add(() => bidOnMagiceden(WALLET_ADDRESS, contractAddress, 1, offerPrice.toString(), expiration.toString(), WALLET_PRIVATE_KEY, task.contract.slug, trait));
+              taskQueue.add(() => bidOnMagiceden(WALLET_ADDRESS, contractAddress, 1, offerPrice.toString(), expiration.toString(), WALLET_PRIVATE_KEY, task.contract.slug, trait));
             });
           } else {
             await bidOnMagiceden(WALLET_ADDRESS, contractAddress, 1, offerPrice.toString(), expiration.toString(), WALLET_PRIVATE_KEY, task.contract.slug);
@@ -230,7 +229,7 @@ async function processTask(task: ITask) {
           if (traitBid) {
             const traits = transformBlurTraits(task.selectedTraits)
             traits.forEach(trait => {
-              traitBidQueue.add(() => bidOnBlur(WALLET_ADDRESS, WALLET_PRIVATE_KEY, contractAddress, offerPrice, task.contract.slug, JSON.stringify(trait)));
+              taskQueue.add(() => bidOnBlur(WALLET_ADDRESS, WALLET_PRIVATE_KEY, contractAddress, offerPrice, task.contract.slug, JSON.stringify(trait)));
             });
           } else {
             await bidOnBlur(WALLET_ADDRESS, WALLET_PRIVATE_KEY, contractAddress, offerPrice, task.contract.slug);
@@ -274,7 +273,6 @@ async function updateStatus(task: ITask) {
 
 async function updateMultipleTasksStatus(data: { taskIds: string[], running: boolean }) {
   const { taskIds, running } = data;
-  const taskQueue = new PQueue({ concurrency: 20 });
 
   taskQueue.addAll(taskIds.map(taskId => async () => {
     const taskIndex = currentTasks.findIndex(task => task._id === taskId);
