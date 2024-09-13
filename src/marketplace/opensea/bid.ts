@@ -1,7 +1,8 @@
-import { BigNumber, constants, Contract, ethers, Wallet } from "ethers";
+import { BigNumber, Contract, ethers, Wallet } from "ethers";
 import { SEAPORT_CONTRACT_ADDRESS, SEAPORT_MIN_ABI, WETH_CONTRACT_ADDRESS, WETH_MIN_ABI } from "../../constants";
 import { API_KEY, axiosInstance, limiter } from "../../init";
 import { ensureAllowance } from "../../functions";
+import { BLUE, RESET } from "../..";
 
 const ALCHEMY_API_KEY = process.env.ALCHEMY_API_KEY
 const provider = new ethers.providers.AlchemyProvider('mainnet', ALCHEMY_API_KEY);
@@ -184,9 +185,6 @@ export async function bidOnOpensea(
   payload.criteria.collection.slug = slug;
 
   if (opensea_traits && typeof opensea_traits !== undefined) {
-    console.log('\x1b[32m%s\x1b[0m', '--------------------------------------------------------');
-    console.log('\x1b[32m%s\x1b[0m', 'INITIATE OPENSEA TRAIT BIDDING.......');
-    console.log('\x1b[32m%s\x1b[0m', '--------------------------------------------------------');
     payload.criteria.trait = JSON.parse(opensea_traits)
   } else {
     delete payload.criteria.trait
@@ -253,7 +251,8 @@ export async function bidOnOpensea(
 
     payload.protocol_data.signature = signObj;
     payload.protocol_address = '0x0000000000000068f116a894984e2db1123eb395';
-    await submitOfferToOpensea(payload)
+
+    await submitOfferToOpensea(payload, opensea_traits)
   } catch (error: any) {
     console.log("opensea error", error);
   }
@@ -264,7 +263,7 @@ export async function bidOnOpensea(
  * Posts an offer to OpenSea.
  * @param payload - The payload of the offer.
  */
-async function submitOfferToOpensea(payload: IPayload) {
+async function submitOfferToOpensea(payload: IPayload, opensea_traits?: string) {
   try {
     await
       limiter.schedule(() => axiosInstance.request({
@@ -276,7 +275,11 @@ async function submitOfferToOpensea(payload: IPayload) {
         },
         data: JSON.stringify(payload)
       }))
-    console.log(`🎉 OFFER POSTED TO OPENSEA SUCCESSFULLY FOR: ${payload.criteria.collection.slug.toUpperCase()} 🎉`);
+
+    const successMessage = opensea_traits ?
+      `🎉 TRAIT OFFER POSTED TO OPENSEA SUCCESSFULLY FOR: ${payload.criteria.collection.slug.toUpperCase()}  TRAIT: ${opensea_traits}🎉`
+      : `🎉 OFFER POSTED TO OPENSEA SUCCESSFULLY FOR: ${payload.criteria.collection.slug.toUpperCase()} 🎉`
+    console.log(BLUE, successMessage, RESET);
   } catch (error: any) {
     console.log("opensea post offer error", error.response.data);
 
