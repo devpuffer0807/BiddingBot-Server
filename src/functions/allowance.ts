@@ -16,6 +16,5 @@ export async function ensureAllowance(wethContract: Contract, walletAddress: str
     }
   } catch (error: any) {
     console.error('Error ensuring allowance:', error?.reason ?? error?.message);
-    throw new Error('Failed to ensure allowance');
   }
 }
