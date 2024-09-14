@@ -1,11 +1,13 @@
 import { BigNumber, ethers, utils, Wallet } from "ethers";
 import { API_KEY, axiosInstance, limiter } from "../../init";
+import redisClient from "../../utils/redis";
+
+const BLUR_API_URL = 'https://api.nfttools.website/blur';
+const EXPIRATION_TIME = 900000; // 15 minutes
+const redis = redisClient.getClient();
 
 const ALCHEMY_API_KEY = process.env.ALCHEMY_API_KEY
 const provider = new ethers.providers.AlchemyProvider('mainnet', ALCHEMY_API_KEY);
-const BLUR_API_URL = 'https://api.nfttools.website/blur';
-const EXPIRATION_TIME = 900000; // 15 minutes
-
 /**
  * Creates an offer on Blur.
  * @param walletAddress - The wallet address of the offerer.
@@ -101,9 +103,15 @@ async function getAccessToken(url: string, private_key: string): Promise<string 
   };
 
   try {
+    const key = `blur-access-token-${wallet.address}`
+    // Check if the access token is already cached in Redis
+    const cachedToken = await redis.get(key);
+    if (cachedToken) {
+      console.log(`FETCH BLUR ACCESS TOKEN FROM REDIS CACHE`);
+      return cachedToken; // Return the cached token if it exists
+    }
     let response: any = await limiter.schedule(() => axiosInstance
       .post(`${url}/auth/challenge`, options, { headers }));
-
     const message = response.data.message;
     const signature = await wallet.signMessage(message);
     const data = {
@@ -113,11 +121,11 @@ async function getAccessToken(url: string, private_key: string): Promise<string 
       hmac: response.data.hmac,
       signature: signature
     };
-
     response = await limiter.schedule(() => axiosInstance
       .post(`${url}/auth/login`, data, { headers }));
-
-    return response.data.accessToken;
+    const accessToken = response.data.accessToken;
+    await redis.set(key, accessToken, 'EX', 2 * 60 * 60);
+    return accessToken;
   } catch (error: any) {
     console.error("getAccessToken Error:", error.response?.data || error.message);
   }
