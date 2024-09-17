@@ -1,18 +1,25 @@
 import { config } from "dotenv";
 import axios from "axios";
-import { axiosInstance, limiter } from "../init";
+import { axiosInstance, limiter } from "../init"; // Import Redis client
+import redisClient from "../utils/redis";
 
 config()
 
 const API_KEY = process.env.API_KEY as string
 
+const redis = redisClient.getClient()
 
+const collectionCache: { [key: string]: any } = {};
+const MAX_CACHE_ITEMS = 1000;
 export async function getCollectionDetails(slug: string) {
+  if (collectionCache[slug]) {
+    return collectionCache[slug];
+  }
+
   try {
     const { data: collection } = await limiter.schedule(() => axiosInstance
       .get(
-        `https://api.nfttools.website/opensea/api/v2/collections/${slug}
-`,
+        `https://api.nfttools.website/opensea/api/v2/collections/${slug}`,
         {
           headers: {
             'X-NFT-API-Key': API_KEY
@@ -35,25 +42,38 @@ export async function getCollectionDetails(slug: string) {
       creator_fees = { null: 0 }
     }
 
-    return {
+    if (Object.keys(collectionCache).length >= MAX_CACHE_ITEMS) {
+      delete collectionCache[Object.keys(collectionCache)[0]];
+    }
+
+    collectionCache[slug] = {
       address: collection.editors[0],
       primary_asset_contracts_address: collection.contracts[0].address,
       creator_fees: creator_fees,
       enforceCreatorFee: enforceCreatorFee,
       ...collection
     };
+
+    return collectionCache[slug];
   } catch (error) {
     console.log('🌵💜🐢 error', error);
-    throw error; // Re-throw the error to handle it in the calling function
+    throw error;
   }
 }
 
 export async function getCollectionStats(collectionSlug: string) {
+  const cacheKey = `collectionStats:${collectionSlug}`;
+  const cachedData = await redis.get(cacheKey);
+  if (cachedData) {
+    return JSON.parse(cachedData);
+  }
+
   try {
     const { data } = await limiter.schedule(() => axios.get<CollectionStats>(`https://api.nfttools.website/opensea/api/v2/collections/${collectionSlug}/stats`, {
       headers: { 'X-NFT-API-Key': API_KEY }
-    }))
+    }));
 
+    await redis.setex(cacheKey, 300, JSON.stringify(data));
     return data;
   } catch (error) {
     console.error('Error fetching collection stats:', error);
