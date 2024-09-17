@@ -1,6 +1,12 @@
 import { BigNumber, ethers, utils, Wallet } from "ethers";
-import { API_KEY, axiosInstance, limiter } from "../../init";
+import { axiosInstance, limiter } from "../../init";
 import redisClient from "../../utils/redis";
+import { RESET } from "../..";
+import { config } from "dotenv";
+
+config()
+
+const API_KEY = process.env.API_KEY as string;
 
 const BLUR_API_URL = 'https://api.nfttools.website/blur';
 const EXPIRATION_TIME = 900000; // 15 minutes
@@ -22,6 +28,7 @@ export async function bidOnBlur(
   contractAddress: string,
   offer_price: BigNumber | bigint,
   slug: string,
+  expiry = 900,
   traits?: string
 ) {
   const offerPrice = BigNumber.from(offer_price.toString());
@@ -35,7 +42,7 @@ export async function bidOnBlur(
       amount: utils.formatUnits(offerPrice),
     },
     quantity: 1,
-    expirationTime: new Date(Date.now() + EXPIRATION_TIME).toISOString(),
+    expirationTime: new Date(Date.now() + (expiry * 1000)).toISOString(),
     contractAddress: contractAddress,
   };
 
@@ -59,9 +66,14 @@ export async function bidOnBlur(
     return;
   }
 
-  const data = build?.signatures?.[0];
+  let data = build?.signatures?.[0];
   if (!data) {
-    console.error('Invalid response');
+    console.error(`Invalid response, retrying... SLUG: ${slug} TRAITS: ${traits}`);
+    build = await formatBidOnBlur(BLUR_API_URL, accessToken, wallet_address, buildPayload); // Retry
+    data = build?.signatures?.[0]; // Reassign data after retry
+  }
+  if (!data) {
+    console.error('Invalid response after retry');
     return;
   }
 
@@ -78,9 +90,22 @@ export async function bidOnBlur(
 
   try {
 
+    const cancelPayload = {
+      contractAddress,
+      criteriaPrices: [
+        {
+          price: utils.formatUnits(offerPrice),
+          ...(traits ? {
+            criteria: {
+              "type": "TRAIT",
+              value: JSON.parse(traits)
+            }
+          } : null)
+        }
+      ]
+    }
 
-    await submitBidToBlur(BLUR_API_URL, accessToken, wallet_address, submitPayload, slug, traits);
-
+    await submitBidToBlur(BLUR_API_URL, accessToken, wallet_address, submitPayload, slug, cancelPayload, expiry, traits);
 
   } catch (error: any) {
     console.error("Error in bidOnBlur:", error.message);
@@ -104,11 +129,9 @@ async function getAccessToken(url: string, private_key: string): Promise<string 
 
   try {
     const key = `blur-access-token-${wallet.address}`
-    // Check if the access token is already cached in Redis
     const cachedToken = await redis.get(key);
     if (cachedToken) {
-      console.log(`FETCH BLUR ACCESS TOKEN FROM REDIS CACHE`);
-      return cachedToken; // Return the cached token if it exists
+      return cachedToken;
     }
     let response: any = await limiter.schedule(() => axiosInstance
       .post(`${url}/auth/challenge`, options, { headers }));
@@ -144,7 +167,7 @@ async function formatBidOnBlur(
   accessToken: string,
   walletAddress: string,
   buildPayload: any
-): Promise<BlurBidResponse> {
+) {
   try {
     const { data } = await limiter.schedule(() =>
       axiosInstance.request<BlurBidResponse>({
@@ -161,8 +184,7 @@ async function formatBidOnBlur(
     );
     return data;
   } catch (error: any) {
-    console.error("Error formatting bid:", error.response?.data || error.message);
-    throw error;
+    console.error("Error formatting bid " + `${JSON.stringify(buildPayload)}`, error.response?.data || error.message);
   }
 }
 
@@ -180,6 +202,8 @@ async function submitBidToBlur(
   walletAddress: string,
   submitPayload: SubmitPayload,
   slug: string,
+  cancelPayload: any,
+  expiry = 900,
   traits?: string
 ) {
   try {
@@ -196,13 +220,18 @@ async function submitBidToBlur(
         data: JSON.stringify(submitPayload),
       })
     );
-
     const successMessage = traits ? `🎉 TRAIT OFFER POSTED TO BLUR SUCCESSFULLY FOR: ${slug.toUpperCase()} 🎉 TRAIT: ${traits}` : `🎉 OFFER POSTED TO BLUR SUCCESSFULLY FOR: ${slug.toUpperCase()} 🎉`
+
 
     if (offers.errors) {
       console.error('Error:', JSON.stringify(offers.errors));
     } else {
-      console.log("\x1b[33m", successMessage);
+      console.log("\x1b[33m", successMessage, RESET);
+      const orderKey = traits
+        ? `${JSON.stringify(traits)}`
+        : "default"
+      const key = `blur:order:${orderKey}`;
+      await redis.setex(key, expiry, cancelPayload);
     }
   } catch (error: any) {
     console.error("Error submitting bid:", error.response?.data || error.message);
