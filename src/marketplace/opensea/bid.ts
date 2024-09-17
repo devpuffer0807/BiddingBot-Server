@@ -1,12 +1,19 @@
 import { BigNumber, Contract, ethers, Wallet } from "ethers";
 import { SEAPORT_CONTRACT_ADDRESS, SEAPORT_MIN_ABI, WETH_CONTRACT_ADDRESS, WETH_MIN_ABI } from "../../constants";
-import { API_KEY, axiosInstance, limiter } from "../../init";
+import { axiosInstance, limiter } from "../../init";
 import { ensureAllowance } from "../../functions";
 import { BLUE, RESET } from "../..";
+import redisClient from "../../utils/redis";
+import { config } from "dotenv";
+config()
+
+const API_KEY = process.env.API_KEY as string;
 
 const ALCHEMY_API_KEY = process.env.ALCHEMY_API_KEY
 const provider = new ethers.providers.AlchemyProvider('mainnet', ALCHEMY_API_KEY);
 const SEAPORT_CONTRACT = new ethers.Contract(SEAPORT_CONTRACT_ADDRESS, SEAPORT_MIN_ABI, provider);
+
+const redis = redisClient.getClient();
 
 const domain = {
   name: 'Seaport',
@@ -120,6 +127,7 @@ const types = {
  * @param offerPrice - The price of the offer in wei.
  * @param creatorFees - The fees for the creators.
  * @param enforceCreatorFee - Whether to enforce creator fees.
+ * @param expiry - bid expiry in seconds.
  * @param openseaTraits - Optional traits for the offer.
  */
 export async function bidOnOpensea(
@@ -129,6 +137,7 @@ export async function bidOnOpensea(
   offer_price: bigint,
   creator_fees: IFee,
   enforceCreatorFee: boolean,
+  expiry: number = 900,
   opensea_traits?: string
 ) {
   const divider = BigNumber.from(10000);
@@ -199,8 +208,9 @@ export async function bidOnOpensea(
 
   try {
     const data = await buildOffer(buildPayload)
+    if (!data || !data.partialParameters) return
     payload.protocol_data.parameters.startTime = BigInt(Math.floor(Date.now() / 1000)).toString();
-    payload.protocol_data.parameters.endTime = BigInt(Math.floor(Date.now() / 1000 + 900)).toString();
+    payload.protocol_data.parameters.endTime = BigInt(Math.floor(Date.now() / 1000 + expiry)).toString();
     payload.protocol_data.parameters.offerer = wallet_address;
     payload.protocol_data.parameters.offer[0].startAmount = offerPrice.toString();
     payload.protocol_data.parameters.offer[0].token = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2';
@@ -252,7 +262,7 @@ export async function bidOnOpensea(
     payload.protocol_data.signature = signObj;
     payload.protocol_address = '0x0000000000000068f116a894984e2db1123eb395';
 
-    await submitOfferToOpensea(payload, opensea_traits)
+    await submitOfferToOpensea(payload, expiry, opensea_traits)
   } catch (error: any) {
     console.log("opensea error", error);
   }
@@ -263,10 +273,10 @@ export async function bidOnOpensea(
  * Posts an offer to OpenSea.
  * @param payload - The payload of the offer.
  */
-async function submitOfferToOpensea(payload: IPayload, opensea_traits?: string) {
+async function submitOfferToOpensea(payload: IPayload, expiry = 900, opensea_traits?: string) {
   try {
-    await
-      limiter.schedule(() => axiosInstance.request({
+    const { data: offer } = await
+      limiter.schedule(() => axiosInstance.request<OpenseaOffer>({
         method: 'POST',
         url: `https://api.nfttools.website/opensea/api/v2/offers`,
         headers: {
@@ -276,12 +286,20 @@ async function submitOfferToOpensea(payload: IPayload, opensea_traits?: string) 
         data: JSON.stringify(payload)
       }))
 
+    const order_hash = offer.order_hash
+    const trait = offer.criteria.trait?.type
+      && offer.criteria.trait?.value
+      ? `${offer.criteria.trait?.type}:${offer.criteria.trait?.value}`
+      : "default"
+
+    const key = `opensea:order:${trait}`;
+    await redis.setex(key, expiry, order_hash);
     const successMessage = opensea_traits ?
-      `🎉 TRAIT OFFER POSTED TO OPENSEA SUCCESSFULLY FOR: ${payload.criteria.collection.slug.toUpperCase()}  TRAIT: ${opensea_traits}🎉`
-      : `🎉 OFFER POSTED TO OPENSEA SUCCESSFULLY FOR: ${payload.criteria.collection.slug.toUpperCase()} 🎉`
+      `🎉 TRAIT OFFER POSTED TO OPENSEA SUCCESSFULLY FOR: ${payload.criteria.collection.slug.toUpperCase()}  TRAIT: ${opensea_traits} 🎉`
+      : `🎉 COLLECTION OFFER POSTED TO OPENSEA SUCCESSFULLY FOR: ${payload.criteria.collection.slug.toUpperCase()} 🎉`
     console.log(BLUE, successMessage, RESET);
   } catch (error: any) {
-    console.log("opensea post offer error", error.response.data);
+    console.log("opensea post offer error", error.response);
 
   }
 }
@@ -305,6 +323,78 @@ async function buildOffer(buildPayload: any) {
   );
 
   return data
+}
+
+interface Price {
+  currency: string;
+  decimals: number;
+  value: string;
+}
+
+interface Collection {
+  slug: string;
+}
+
+interface Address {
+  address: string;
+}
+
+interface Trait {
+  type?: string;
+  value?: string;
+}
+
+interface Criteria {
+  collection: Collection;
+  contract: Address;
+  trait: Trait | null;
+  encoded_token_ids: any; // Adjust type as necessary
+}
+
+interface OfferItem {
+  itemType: number;
+  token: string;
+  identifierOrCriteria: string;
+  startAmount: string;
+  endAmount: string;
+}
+
+interface ConsiderationItem {
+  itemType: number;
+  token: string;
+  identifierOrCriteria: string;
+  startAmount: string;
+  endAmount: string;
+  recipient: string;
+}
+
+interface Parameters {
+  offerer: string;
+  offer: OfferItem[];
+  consideration: ConsiderationItem[];
+  startTime: string;
+  endTime: string;
+  orderType: number;
+  zone: string;
+  zoneHash: string;
+  salt: string;
+  conduitKey: string;
+  totalOriginalConsiderationItems: number;
+  counter: number;
+}
+
+interface ProtocolData {
+  parameters: Parameters;
+  signature: string;
+}
+
+interface OpenseaOffer {
+  order_hash: string;
+  chain: string;
+  price: Price;
+  criteria: Criteria;
+  protocol_data: ProtocolData;
+  protocol_address: string;
 }
 
 
