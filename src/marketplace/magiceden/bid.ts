@@ -1,13 +1,18 @@
 import { BigNumber, Contract, ethers, Wallet } from "ethers";
-import { API_KEY, axiosInstance, limiter } from "../../init";
+import { axiosInstance, limiter } from "../../init";
 import { MAGICEDEN_CONTRACT_ADDRESS, WETH_CONTRACT_ADDRESS, WETH_MIN_ABI } from "../../constants";
 import { config } from "dotenv";
 import { ensureAllowance } from "../../functions";
 import { MAGENTA, RESET } from "../..";
+import redisClient from "../../utils/redis";
 
 config()
+
+const API_KEY = process.env.API_KEY as string;
 const ALCHEMY_API_KEY = process.env.ALCHEMY_API_KEY
 const provider = new ethers.providers.AlchemyProvider('mainnet', ALCHEMY_API_KEY);
+
+const redis = redisClient.getClient();
 
 /**
  * Places a bid on Magic Eden.
@@ -32,6 +37,7 @@ export async function bidOnMagiceden(
   trait?: Trait,
 ) {
 
+  const expiry = Math.ceil(Number(expirationTime) - (Date.now() / 1000))
 
   const wallet = new Wallet(privateKey, provider);
   const wethContract = new Contract(WETH_CONTRACT_ADDRESS,
@@ -43,7 +49,7 @@ export async function bidOnMagiceden(
   const order = await createBidData(maker, collection, quantity, weiPrice, expirationTime, trait);
 
   if (order) {
-    const res = await submitSignedOrderData(order, wallet, slug, trait)
+    const res = await submitSignedOrderData(order, wallet, slug, expiry, trait)
     return res
   }
   return order
@@ -183,9 +189,11 @@ async function signOrderData(wallet: ethers.Wallet, signData: any, trait?: Trait
  * @param signature - The signature of the order data.
  * @param data - The order data.
  * @param slug - Collection slug
+* @param expiry - bid expiry in seconds
+* @param trait - Collection trait
  * @returns The response from the API.
  */
-async function sendSignedOrderData(signature: string, data: SignedData, slug: string, trait?: Trait) {
+async function sendSignedOrderData(signature: string, data: SignedData, slug: string, expiry: number = 900, trait?: Trait) {
 
   const endpoint = trait
     ? "https://api.nfttools.website/magiceden/v3/rtp/ethereum/order/v3"
@@ -205,22 +213,28 @@ async function sendSignedOrderData(signature: string, data: SignedData, slug: st
       )
     );
 
-    const successMessage = trait ? `🎉 TRAIT OFFER POSTED TO MAGICEDEN SUCCESSFULLY FOR: ${slug.toUpperCase()} TRAIT: ${JSON.stringify(trait)} 🎉` : `🎉 OFFER POSTED TO MAGICEDEN SUCCESSFULLY FOR: ${slug.toUpperCase()} 🎉`
+    const successMessage = trait ?
+      `🎉 TRAIT OFFER POSTED TO MAGICEDEN SUCCESSFULLY FOR: ${slug.toUpperCase()} TRAIT: ${JSON.stringify(trait)} 🎉`
+      : `🎉 OFFER POSTED TO MAGICEDEN SUCCESSFULLY FOR: ${slug.toUpperCase()} 🎉`
 
+    const orderKey = trait
+      ? `${JSON.stringify(trait)}`
+      : "default"
+
+    const key = `magiceden:order:${orderKey}`;
+    const order = JSON.stringify(offerResponse)
+
+    await redis.setex(key, expiry, order);
     console.log(MAGENTA, successMessage, RESET);
-
     return offerResponse;
   } catch (axiosError: any) {
     console.log("something went wrong here");
 
     if (axiosError.response) {
-      // Server responded with a status other than 2xx
       console.error('Error response from server:', axiosError.response.data);
     } else if (axiosError.request) {
-      // Request was made but no response received
       console.error('No response received:', axiosError.request);
     } else {
-      // Something else happened while setting up the request
       console.error('Error setting up request:', axiosError.message);
     }
     throw axiosError;
@@ -235,12 +249,13 @@ async function sendSignedOrderData(signature: string, data: SignedData, slug: st
  * @param slug - Collection slug
 
  */
-export async function submitSignedOrderData(order: CreateBidData, wallet: ethers.Wallet, slug: string, trait?: Trait) {
+export async function submitSignedOrderData(order: CreateBidData, wallet: ethers.Wallet, slug: string, expiry = 900, trait?: Trait) {
   const signData = order?.steps
     ?.find((step) => step.id === "order-signature")
     ?.items?.[0]?.data?.sign;
 
   try {
+    if (!signData || !signData.value) return
     const signature = await signOrderData(wallet, signData, trait);
     let data: any;
 
@@ -295,9 +310,9 @@ export async function submitSignedOrderData(order: CreateBidData, wallet: ethers
         console.error('Sign data not found in order steps.');
       }
     }
-    return await sendSignedOrderData(signature, data, slug, trait);
+    return await sendSignedOrderData(signature, data, slug, expiry, trait);
   } catch (error: any) {
-    console.error('Error in submitSignedOrderData:', error.response);
+    console.error('Error in submitSignedOrderData:', error);
   }
 
 }
