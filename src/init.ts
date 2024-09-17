@@ -9,7 +9,7 @@ let RATE_LIMIT: number = 20;
 
 
 async function fetchRateLimitFromDatabase() {
-  return { rateLimit: 24, apiKey: "9669db1f-485e-4cbf-8041-2c886a5ca440" }; // Default value for now
+  return { rateLimit: 24, apiKey: "8fa3d411-a50c-43cb-ac4e-1306575ac586" }; // Default value for now
 }
 
 const retryConfig: IAxiosRetryConfig = {
