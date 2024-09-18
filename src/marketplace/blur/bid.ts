@@ -89,18 +89,15 @@ export async function bidOnBlur(
   };
 
   try {
-
     const cancelPayload = {
       contractAddress,
       criteriaPrices: [
         {
           price: utils.formatUnits(offerPrice),
-          ...(traits ? {
-            criteria: {
-              "type": "TRAIT",
-              value: JSON.parse(traits)
-            }
-          } : null)
+          criteria: {
+            "type": traits ? "TRAIT" : "COLLECTION",
+            value: traits ? JSON.parse(traits) : {}
+          }
         }
       ]
     }
@@ -230,12 +227,66 @@ async function submitBidToBlur(
       const orderKey = traits
         ? `${JSON.stringify(traits)}`
         : "default"
-      const key = `blur:order:${orderKey}`;
-      await redis.setex(key, expiry, cancelPayload);
+
+      const key = `blur:order:${slug}:${orderKey}`;
+      await redis.setex(key, expiry, JSON.stringify(cancelPayload));
     }
   } catch (error: any) {
     console.error("Error submitting bid:", error.response?.data || error.message);
   }
+}
+
+export async function cancelBlurBid(data: BlurCancelPayload) {
+  try {
+    const { payload, privateKey } = data
+    const wallet = new Wallet(privateKey, provider);
+    const walletAddress = wallet.address
+    const accessToken = await getAccessToken(BLUR_API_URL, privateKey);
+    const endpoint = `${BLUR_API_URL}/v1/collection-bids/cancel`
+    const { data: cancelResponse } = await limiter.schedule(() => axiosInstance.post(endpoint, payload, {
+      headers: {
+        'content-type': 'application/json',
+        authToken: accessToken,
+        walletAddress: walletAddress.toLowerCase(),
+        'X-NFT-API-Key': API_KEY,
+      }
+    }))
+    console.log(JSON.stringify(cancelResponse));
+  } catch (error) {
+    console.log(error);
+  }
+}
+
+interface BlurCancelPayload {
+  payload: {
+    contractAddress: string;
+    criteriaPrices: Array<{
+      price: string;
+      criteria?: {
+        type: string;
+        value: Record<string, string>;
+      }
+    }>;
+  };
+  privateKey: string;
+}
+
+
+interface Criteria {
+  type: string;
+  value: {
+    [key: string]: string; // Adjust the type if you have specific keys
+  };
+}
+
+interface CriteriaPrice {
+  price: string;
+  criteria: Criteria;
+}
+
+interface ICancelPayload {
+  contractAddress: string;
+  criteriaPrices: CriteriaPrice[];
 }
 
 interface BlurBidResponse {
@@ -278,7 +329,6 @@ interface Types {
   [key: string]: any; // Allow additional properties
 
 }
-
 interface OrderType {
   name: string;
   type: string;
