@@ -5,11 +5,11 @@ import axiosRetry, { IAxiosRetryConfig } from "axios-retry";
 let limiter: Bottleneck;
 let axiosInstance: AxiosInstance;
 let API_KEY: string;
-let RATE_LIMIT: number = 20;
+let RATE_LIMIT: number = 16;
 
 
 async function fetchRateLimitFromDatabase() {
-  return { rateLimit: 24, apiKey: "8fa3d411-a50c-43cb-ac4e-1306575ac586" }; // Default value for now
+  return { rateLimit: 16, apiKey: "8fa3d411-a50c-43cb-ac4e-1306575ac586" }; // Default value for now
 }
 
 const retryConfig: IAxiosRetryConfig = {
