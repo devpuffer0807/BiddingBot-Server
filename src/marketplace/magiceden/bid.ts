@@ -126,7 +126,6 @@ async function createBidData(
   }
 }
 
-
 /**
  * Signs the order data.
  * @param wallet - The wallet of the offerer.
@@ -221,7 +220,7 @@ async function sendSignedOrderData(signature: string, data: SignedData, slug: st
       ? `${JSON.stringify(trait)}`
       : "default"
 
-    const key = `magiceden:order:${orderKey}`;
+    const key = `magiceden:order:${slug}:${orderKey}`;
     const order = JSON.stringify(offerResponse)
 
     await redis.setex(key, expiry, order);
@@ -315,6 +314,115 @@ export async function submitSignedOrderData(order: CreateBidData, wallet: ethers
     console.error('Error in submitSignedOrderData:', error);
   }
 
+}
+
+export async function canelMagicEdenBid(orderIds: string[], privateKey: string) {
+  try {
+
+    const { data } = await limiter.schedule(() => axiosInstance.post<MagicEdenCancelOfferCancel>('https://api.nfttools.website/magiceden/v3/rtp/ethereum/execute/cancel/v3', { orderIds }, {
+      headers: {
+        'content-type': 'application/json',
+        'X-NFT-API-Key': API_KEY
+      }
+    }));
+
+    const cancelStep = data?.steps?.find((step) => step.id === "cancellation-signature")
+    const cancelItem = cancelStep?.items[0]?.data?.sign
+    const signature = await signCancelOrder(cancelItem, privateKey)
+    const body = cancelStep?.items[0].data.post.body
+
+    const { data: cancelResponse } = await limiter.schedule(() => axiosInstance.post(`https://api.nfttools.website/magiceden/v3/rtp/ethereum/execute/cancel-signature/v1?signature=${signature}`, body, {
+      headers: {
+        'content-type': 'application/json',
+        'X-NFT-API-Key': API_KEY
+      }
+    }))
+
+    console.log(JSON.stringify(cancelResponse));
+  } catch (error) {
+    console.log(error);
+  }
+}
+
+async function signCancelOrder(cancelItem: SignCancel | undefined, privateKey: string) {
+  try {
+    if (!cancelItem) {
+      console.log('INVALID CANCEL DATA');
+      return
+    }
+    const wallet = new Wallet(privateKey, provider);
+    const signature = await wallet._signTypedData(
+      cancelItem.domain,
+      cancelItem.types,
+      cancelItem.value
+    );
+
+    return signature;
+  } catch (error) {
+    console.log(error);
+
+  }
+}
+
+interface MagicEdenCancelOfferCancel {
+  steps: StepCancel[];
+}
+
+interface StepCancel {
+  id: string;
+  action: string;
+  description: string;
+  kind: string;
+  items: ItemCancel[];
+}
+
+interface ItemCancel {
+  status: string;
+  orderIds: string[];
+  data: DataCancel;
+}
+
+interface DataCancel {
+  sign: SignCancel;
+  post: PostCancel;
+}
+
+interface SignCancel {
+  signatureKind: string;
+  domain: DomainCancel;
+  types: any;
+  value: ValueCancel;
+}
+
+interface DomainCancel {
+  name: string;
+  version: string;
+  chainId: number;
+  verifyingContract: string;
+}
+
+interface TypesCancel {
+  OrderHashes: OrderHashCancel[];
+}
+
+interface OrderHashCancel {
+  name: string;
+  type: string;
+}
+
+interface ValueCancel {
+  orderHashes: string[];
+}
+
+interface PostCancel {
+  endpoint: string;
+  method: string;
+  body: BodyCancel;
+}
+
+interface BodyCancel {
+  orderIds: string[];
+  orderKind: string;
 }
 
 interface StepItem {
