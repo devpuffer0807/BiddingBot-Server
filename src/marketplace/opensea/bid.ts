@@ -289,10 +289,11 @@ async function submitOfferToOpensea(payload: IPayload, expiry = 900, opensea_tra
     const order_hash = offer.order_hash
     const trait = offer.criteria.trait?.type
       && offer.criteria.trait?.value
-      ? `${offer.criteria.trait?.type}:${offer.criteria.trait?.value}`
+      ? `trait:${offer.criteria.trait?.type}:${offer.criteria.trait?.value}`
       : "default"
 
-    const key = `opensea:order:${trait}`;
+    const slug = offer.criteria.collection.slug
+    const key = `opensea:order:${slug}:${trait}`;
     await redis.setex(key, expiry, order_hash);
     const successMessage = opensea_traits ?
       `🎉 TRAIT OFFER POSTED TO OPENSEA SUCCESSFULLY FOR: ${payload.criteria.collection.slug.toUpperCase()}  TRAIT: ${opensea_traits} 🎉`
@@ -323,6 +324,62 @@ async function buildOffer(buildPayload: any) {
   );
 
   return data
+}
+
+export async function cancelOrder(orderHash: string, protocolAddress: string, privateKey: string) {
+
+  const offererSignature = await signCancelOrder(orderHash, protocolAddress, privateKey);
+
+  if (!offererSignature) {
+    console.error("Failed to sign the cancel order.");
+    return;
+  }
+
+  const url = `https://api.nfttools.website/opensea/api/v2/orders/chain/ethereum/protocol/${protocolAddress}/${orderHash}/cancel`;
+
+  const headers = {
+    'content-type': 'application/json',
+    'X-NFT-API-Key': API_KEY
+  };
+
+  const body = {
+    offerer_signature: offererSignature
+  };
+
+  try {
+    const response = await axiosInstance.post(url, body, { headers });
+    return response.data;
+  } catch (error: any) {
+    console.error("Error sending the cancel order request: ", error.response ? error.response.data : error.message);
+    return null;
+  }
+}
+
+async function signCancelOrder(orderHash: string, protocolAddress: string, privateKey: string) {
+
+  const wallet = new Wallet(privateKey, provider);
+
+  const domain = {
+    name: 'Seaport',
+    version: '1.6',
+    chainId: '1',
+    verifyingContract: protocolAddress
+  };
+  const types = {
+    OrderHash: [
+      { name: 'orderHash', type: 'bytes32' }
+    ]
+  };
+  const value = {
+    orderHash: orderHash
+  };
+  try {
+    const signature = await wallet._signTypedData(domain, types, value);
+    return signature;
+  } catch (error) {
+    console.error("Error signing the cancel order message: ", error);
+    return null;
+  }
 }
 
 interface Price {
