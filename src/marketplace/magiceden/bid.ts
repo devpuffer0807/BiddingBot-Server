@@ -35,6 +35,7 @@ export async function bidOnMagiceden(
   privateKey: string,
   slug: string,
   trait?: Trait,
+  tokenId?: string | number
 ) {
 
   const expiry = Math.ceil(Number(expirationTime) - (Date.now() / 1000))
@@ -46,10 +47,13 @@ export async function bidOnMagiceden(
   const offerPrice = BigNumber.from(weiPrice);
   await ensureAllowance(wethContract, wallet.address, offerPrice, MAGICEDEN_CONTRACT_ADDRESS);
 
-  const order = await createBidData(maker, collection, quantity, weiPrice, expirationTime, trait);
+  const order = await createBidData(maker, collection, quantity, weiPrice, expirationTime, trait, tokenId);
 
   if (order) {
-    const res = await submitSignedOrderData(order, wallet, slug, expiry, trait)
+    const res = await tokenId ?
+      submitSignedOrderData(order, wallet, slug, expiry, undefined, tokenId)
+      : trait ? submitSignedOrderData(order, wallet, slug, expiry, trait, undefined)
+        : submitSignedOrderData(order, wallet, slug, expiry, undefined, undefined)
     return res
   }
   return order
@@ -72,10 +76,11 @@ async function createBidData(
   quantity: number,
   weiPrice: string,
   expirationTime: string,
-  trait?: Trait
+  trait?: Trait,
+  tokenId?: number | string,
 ) {
 
-  const options = trait ? {
+  const options = trait || tokenId ? {
     "seaport-v1.6": {
       "useOffChainCancellation": true,
       "conduitKey": "0x87328c9043E7BF343695554EAAF5a8892f7205e3000000000000000000000000"
@@ -86,10 +91,10 @@ async function createBidData(
     }
   }
 
-  const orderKind = trait ? "seaport-v1.6" : "payment-processor-v2"
+  const orderKind = trait || tokenId ? "seaport-v1.6" : "payment-processor-v2"
   const params = [
     {
-      collection: collection,
+      ...(tokenId ? {} : { collection: collection }),
       currency: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
       quantity: quantity,
       weiPrice: weiPrice,
@@ -98,7 +103,7 @@ async function createBidData(
       orderbook: "reservoir",
       options: options,
       automatedRoyalties: true,
-      ...(trait ? { attributeKey: trait.attributeKey, attributeValue: trait.attributeValue } : {})
+      ...(tokenId ? { token: `${collection}:${tokenId}` } : trait ? { attributeKey: trait.attributeKey, attributeValue: trait.attributeValue } : {})
     }
   ];
 
@@ -118,9 +123,8 @@ async function createBidData(
     }));
     response = order
     return order;
-
   } catch (error: any) {
-    console.log(error);
+    console.log(error.response.data);
   } finally {
     return response
   }
@@ -192,9 +196,9 @@ async function signOrderData(wallet: ethers.Wallet, signData: any, trait?: Trait
 * @param trait - Collection trait
  * @returns The response from the API.
  */
-async function sendSignedOrderData(signature: string, data: SignedData, slug: string, expiry: number = 900, trait?: Trait) {
+async function sendSignedOrderData(signature: string, data: SignedData, slug: string, expiry: number = 900, trait?: Trait, tokenId?: number | string) {
 
-  const endpoint = trait
+  const endpoint = trait || tokenId
     ? "https://api.nfttools.website/magiceden/v3/rtp/ethereum/order/v3"
     : "https://api.nfttools.website/magiceden/v3/rtp/ethereum/order/v4"
 
@@ -212,9 +216,10 @@ async function sendSignedOrderData(signature: string, data: SignedData, slug: st
       )
     );
 
-    const successMessage = trait ?
-      `🎉 TRAIT OFFER POSTED TO MAGICEDEN SUCCESSFULLY FOR: ${slug.toUpperCase()} TRAIT: ${JSON.stringify(trait)} 🎉`
-      : `🎉 OFFER POSTED TO MAGICEDEN SUCCESSFULLY FOR: ${slug.toUpperCase()} 🎉`
+    const successMessage = tokenId ? `🎉 TOKEN OFFER POSTED TO MAGICEDEN SUCCESSFULLY FOR: ${slug.toUpperCase()} TOKEN: ${tokenId} 🎉` :
+      trait ?
+        `🎉 TRAIT OFFER POSTED TO MAGICEDEN SUCCESSFULLY FOR: ${slug.toUpperCase()} TRAIT: ${JSON.stringify(trait)} 🎉`
+        : `🎉 OFFER POSTED TO MAGICEDEN SUCCESSFULLY FOR: ${slug.toUpperCase()} 🎉`
 
     const orderKey = trait
       ? `${JSON.stringify(trait)}`
@@ -226,17 +231,8 @@ async function sendSignedOrderData(signature: string, data: SignedData, slug: st
     await redis.setex(key, expiry, order);
     console.log(MAGENTA, successMessage, RESET);
     return offerResponse;
-  } catch (axiosError: any) {
-    console.log("something went wrong here");
-
-    if (axiosError.response) {
-      console.error('Error response from server:', axiosError.response.data);
-    } else if (axiosError.request) {
-      console.error('No response received:', axiosError.request);
-    } else {
-      console.error('Error setting up request:', axiosError.message);
-    }
-    throw axiosError;
+  } catch (error: any) {
+    console.log(error.response.data);
   }
 }
 
@@ -248,7 +244,7 @@ async function sendSignedOrderData(signature: string, data: SignedData, slug: st
  * @param slug - Collection slug
 
  */
-export async function submitSignedOrderData(order: CreateBidData, wallet: ethers.Wallet, slug: string, expiry = 900, trait?: Trait) {
+export async function submitSignedOrderData(order: CreateBidData, wallet: ethers.Wallet, slug: string, expiry = 900, trait?: Trait, tokenId?: number | string) {
   const signData = order?.steps
     ?.find((step) => step.id === "order-signature")
     ?.items?.[0]?.data?.sign;
@@ -282,6 +278,10 @@ export async function submitSignedOrderData(order: CreateBidData, wallet: ethers
         "orderbook": "reservoir",
         "source": "magiceden.io"
       };
+    } else if (tokenId) {
+      data = order?.steps
+        ?.find((step) => step.id === "order-signature")
+        ?.items?.[0]?.data?.post.body;
     } else {
       if (signData) {
         const payload = signData.value;
@@ -309,7 +309,7 @@ export async function submitSignedOrderData(order: CreateBidData, wallet: ethers
         console.error('Sign data not found in order steps.');
       }
     }
-    return await sendSignedOrderData(signature, data, slug, expiry, trait);
+    return await sendSignedOrderData(signature, data, slug, expiry, trait, tokenId);
   } catch (error: any) {
     console.error('Error in submitSignedOrderData:', error);
   }
@@ -557,3 +557,269 @@ interface Trait {
   attributeKey: string;
   attributeValue: string;
 };
+
+
+// https://api-mainnet.magiceden.io/v3/rtp/ethereum/execute/bid/v5
+
+
+// {"maker":"0x06c0971e22bd902Fb4DC0cEcb214F1653F1A7B94","source":"magiceden.io","params":[{"weiPrice":"10000000000000000","currency":"0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2","quantity":1,"orderbook":"reservoir","orderKind":"seaport-v1.6","options":{"seaport-v1.6":{"useOffChainCancellation":true,"conduitKey":"0x87328c9043E7BF343695554EAAF5a8892f7205e3000000000000000000000000"}},"expirationTime":"1729357920","token":"0xa9f0a21b795a0ad2782c9ed82816c7e5b40cede4:155","automatedRoyalties":true}]}
+
+
+const response = {
+  "steps": [
+    {
+      "id": "currency-wrapping",
+      "action": "Wrapping currency",
+      "description": "We'll ask your approval to wrap the currency for bidding. Gas fee required.",
+      "kind": "transaction",
+      "items": []
+    },
+    {
+      "id": "currency-approval",
+      "action": "Approve currency",
+      "description": "We'll ask your approval for the exchange to access your token. This is a one-time only operation per exchange.",
+      "kind": "transaction",
+      "items": [
+        {
+          "status": "complete",
+          "orderIndexes": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "id": "auth-transaction",
+      "action": "On-chain verification",
+      "description": "Some marketplaces require triggering an auth transaction before filling",
+      "kind": "transaction",
+      "items": []
+    },
+    {
+      "id": "currency-permit",
+      "action": "Sign permits",
+      "description": "Sign permits for accessing the tokens in your wallet",
+      "kind": "signature",
+      "items": []
+    },
+    {
+      "id": "order-signature",
+      "action": "Authorize offer",
+      "description": "A free off-chain signature to create the offer",
+      "kind": "signature",
+      "items": [
+        {
+          "status": "incomplete",
+          "data": {
+            "sign": {
+              "signatureKind": "eip712",
+              "domain": {
+                "name": "Seaport",
+                "version": "1.6",
+                "chainId": 1,
+                "verifyingContract": "0x0000000000000068f116a894984e2db1123eb395"
+              },
+              "types": {
+                "OrderComponents": [
+                  {
+                    "name": "offerer",
+                    "type": "address"
+                  },
+                  {
+                    "name": "zone",
+                    "type": "address"
+                  },
+                  {
+                    "name": "offer",
+                    "type": "OfferItem[]"
+                  },
+                  {
+                    "name": "consideration",
+                    "type": "ConsiderationItem[]"
+                  },
+                  {
+                    "name": "orderType",
+                    "type": "uint8"
+                  },
+                  {
+                    "name": "startTime",
+                    "type": "uint256"
+                  },
+                  {
+                    "name": "endTime",
+                    "type": "uint256"
+                  },
+                  {
+                    "name": "zoneHash",
+                    "type": "bytes32"
+                  },
+                  {
+                    "name": "salt",
+                    "type": "uint256"
+                  },
+                  {
+                    "name": "conduitKey",
+                    "type": "bytes32"
+                  },
+                  {
+                    "name": "counter",
+                    "type": "uint256"
+                  }
+                ],
+                "OfferItem": [
+                  {
+                    "name": "itemType",
+                    "type": "uint8"
+                  },
+                  {
+                    "name": "token",
+                    "type": "address"
+                  },
+                  {
+                    "name": "identifierOrCriteria",
+                    "type": "uint256"
+                  },
+                  {
+                    "name": "startAmount",
+                    "type": "uint256"
+                  },
+                  {
+                    "name": "endAmount",
+                    "type": "uint256"
+                  }
+                ],
+                "ConsiderationItem": [
+                  {
+                    "name": "itemType",
+                    "type": "uint8"
+                  },
+                  {
+                    "name": "token",
+                    "type": "address"
+                  },
+                  {
+                    "name": "identifierOrCriteria",
+                    "type": "uint256"
+                  },
+                  {
+                    "name": "startAmount",
+                    "type": "uint256"
+                  },
+                  {
+                    "name": "endAmount",
+                    "type": "uint256"
+                  },
+                  {
+                    "name": "recipient",
+                    "type": "address"
+                  }
+                ]
+              },
+              "value": {
+                "offerer": "0x06c0971e22bd902fb4dc0cecb214f1653f1a7b94",
+                "zone": "0x2d1a340cd83434243d090931afabf95b7d3078b0",
+                "offer": [
+                  {
+                    "itemType": 1,
+                    "token": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+                    "identifierOrCriteria": "0",
+                    "startAmount": "10000000000000000",
+                    "endAmount": "10000000000000000"
+                  }
+                ],
+                "consideration": [
+                  {
+                    "itemType": 2,
+                    "token": "0xa9f0a21b795a0ad2782c9ed82816c7e5b40cede4",
+                    "identifierOrCriteria": "155",
+                    "startAmount": "1",
+                    "endAmount": "1",
+                    "recipient": "0x06c0971e22bd902fb4dc0cecb214f1653f1a7b94"
+                  },
+                  {
+                    "itemType": 1,
+                    "token": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+                    "identifierOrCriteria": "0",
+                    "startAmount": "200000000000000",
+                    "endAmount": "200000000000000",
+                    "recipient": "0x6fa303e72bed54f515a513496f922bc331e2f27e"
+                  }
+                ],
+                "orderType": 2,
+                "startTime": 1726765907,
+                "endTime": 1729357920,
+                "zoneHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+                "salt": "0x0e1c0c381d4da48b00000000000000006bdeb0809e69d948e0207099aaa3e423",
+                "conduitKey": "0x87328c9043e7bf343695554eaaf5a8892f7205e3000000000000000000000000",
+                "counter": "0"
+              },
+              "primaryType": "OrderComponents"
+            },
+            "post": {
+              "endpoint": "/order/v3",
+              "method": "POST",
+              "body": {
+                "order": {
+                  "kind": "seaport-v1.6",
+                  "data": {
+                    "kind": "single-token",
+                    "offerer": "0x06c0971e22bd902fb4dc0cecb214f1653f1a7b94",
+                    "zone": "0x2d1a340cd83434243d090931afabf95b7d3078b0",
+                    "offer": [
+                      {
+                        "itemType": 1,
+                        "token": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+                        "identifierOrCriteria": "0",
+                        "startAmount": "10000000000000000",
+                        "endAmount": "10000000000000000"
+                      }
+                    ],
+                    "consideration": [
+                      {
+                        "itemType": 2,
+                        "token": "0xa9f0a21b795a0ad2782c9ed82816c7e5b40cede4",
+                        "identifierOrCriteria": "155",
+                        "startAmount": "1",
+                        "endAmount": "1",
+                        "recipient": "0x06c0971e22bd902fb4dc0cecb214f1653f1a7b94"
+                      },
+                      {
+                        "itemType": 1,
+                        "token": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+                        "identifierOrCriteria": "0",
+                        "startAmount": "200000000000000",
+                        "endAmount": "200000000000000",
+                        "recipient": "0x6fa303e72bed54f515a513496f922bc331e2f27e"
+                      }
+                    ],
+                    "orderType": 2,
+                    "startTime": 1726765907,
+                    "endTime": 1729357920,
+                    "zoneHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+                    "salt": "0x0e1c0c381d4da48b00000000000000006bdeb0809e69d948e0207099aaa3e423",
+                    "conduitKey": "0x87328c9043e7bf343695554eaaf5a8892f7205e3000000000000000000000000",
+                    "counter": "0",
+                    "signature": "0x0000000000000000000000000000000000000000000000000000000000000000"
+                  }
+                },
+                "isNonFlagged": false,
+                "orderbook": "reservoir",
+                "source": "magiceden.io"
+              }
+            }
+          },
+          "orderIndexes": [
+            0
+          ]
+        }
+      ]
+    }
+  ],
+  "errors": []
+}
+
+
+// https://api-mainnet.magiceden.io/v3/rtp/ethereum/order/v3?signature=0x14ac5077760b90b1fde33d8ad4f1b7648515941caa1d9820cd02e4d244ebb3a97270d9dfc7cc73f57a6424deb801cc366d084cfdb081c3cbddd72b2f86bcf46c1c
+
+
+// {"order":{"kind":"seaport-v1.6","data":{"kind":"single-token","offerer":"0x06c0971e22bd902fb4dc0cecb214f1653f1a7b94","zone":"0x2d1a340cd83434243d090931afabf95b7d3078b0","offer":[{"itemType":1,"token":"0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2","identifierOrCriteria":"0","startAmount":"10000000000000000","endAmount":"10000000000000000"}],"consideration":[{"itemType":2,"token":"0xa9f0a21b795a0ad2782c9ed82816c7e5b40cede4","identifierOrCriteria":"155","startAmount":"1","endAmount":"1","recipient":"0x06c0971e22bd902fb4dc0cecb214f1653f1a7b94"},{"itemType":1,"token":"0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2","identifierOrCriteria":"0","startAmount":"200000000000000","endAmount":"200000000000000","recipient":"0x6fa303e72bed54f515a513496f922bc331e2f27e"}],"orderType":2,"startTime":1726765907,"endTime":1729357920,"zoneHash":"0x0000000000000000000000000000000000000000000000000000000000000000","salt":"0x0e1c0c381d4da48b00000000000000006bdeb0809e69d948e0207099aaa3e423","conduitKey":"0x87328c9043e7bf343695554eaaf5a8892f7205e3000000000000000000000000","counter":"0","signature":"0x0000000000000000000000000000000000000000000000000000000000000000"}},"isNonFlagged":false,"orderbook":"reservoir","source":"magiceden.io"}

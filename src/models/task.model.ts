@@ -45,6 +45,7 @@ export interface ITask extends Document {
     triggerStopOptions: boolean;
   };
   bidDuration: number;
+  tokenIds: number[]
 }
 
 const TaskSchema: Schema = new Schema(
@@ -91,6 +92,8 @@ const TaskSchema: Schema = new Schema(
       triggerStopOptions: { type: Boolean, default: false },
     },
     bidDuration: { type: Number, required: false, default: 900 },
+    tokenIds: { type: [Number], default: [] }, // Add this line
+
   },
   { timestamps: true }
 );
