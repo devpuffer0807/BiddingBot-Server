@@ -555,7 +555,7 @@ async function processOpenseaCounterBid(data: any) {
 
 async function processOpenseaScheduledBid(task: ITask) {
   try {
-    if (!task.running) return
+    if (!task.running || !task.selectedMarketplaces.map((marketplace) => marketplace.toLowerCase()).includes("opensea")) return
 
     const expiry = task.bidDuration || 900
     let cachedData = taskCache.get(task._id);
@@ -629,7 +629,7 @@ async function processOpenseaScheduledBid(task: ITask) {
 
 async function processBlurScheduledBid(task: ITask) {
   try {
-    if (!task.running) return
+    if (!task.running || !task.selectedMarketplaces.map((marketplace) => marketplace.toLowerCase()).includes("blur")) return
 
     const expiry = task.bidDuration || 900;
     let cachedData = taskCache.get(task._id);
@@ -739,7 +739,7 @@ async function processBlurTraitBid(data: {
 
 async function processMagicedenScheduledBid(task: ITask) {
   try {
-    if (!task.running) return
+    if (!task.running || !task.selectedMarketplaces.map((marketplace) => marketplace.toLowerCase()).includes("magiceden")) return
     let cachedData = taskCache.get(task._id);
     let WALLET_ADDRESS: string, WALLET_PRIVATE_KEY: string;
 
@@ -759,7 +759,7 @@ async function processMagicedenScheduledBid(task: ITask) {
     const traitBid = task.selectedTraits && Object.keys(task.selectedTraits).length > 0
     const contractAddress = task.contract.contractAddress
 
-    const duration = 15; // minutes
+    const duration = task.bidDuration / 60 || 15; // minutes
     const currentTime = new Date().getTime();
     const expiration = Math.floor((currentTime + (duration * 60 * 1000)) / 1000);
     const stats = await getCollectionStats(task.contract.slug);
