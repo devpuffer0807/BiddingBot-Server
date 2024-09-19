@@ -501,7 +501,7 @@ async function processOpenseaCounterBid(data: any) {
     }
     console.log(GREEN + `Counterbidding for collection: ${task.contract.slug}` + RESET); // Log message added
 
-    const expiry = 900;
+    const expiry = task.bidDuration || 900;
     const { address: WALLET_ADDRESS, privateKey: WALLET_PRIVATE_KEY } = task.wallet;
     const collectionDetails = await getCollectionDetails(task.contract.slug);
     const creatorFees: IFee = collectionDetails.creator_fees.null !== undefined
@@ -557,7 +557,7 @@ async function processOpenseaScheduledBid(task: ITask) {
   try {
     if (!task.running) return
 
-    const expiry = 900
+    const expiry = task.bidDuration || 900
     let cachedData = taskCache.get(task._id);
     let WALLET_ADDRESS: string, WALLET_PRIVATE_KEY: string;
 
@@ -603,7 +603,8 @@ async function processOpenseaScheduledBid(task: ITask) {
           offerPrice: offerPrice.toString(),
           creatorFees,
           enforceCreatorFee: collectionDetails.enforceCreatorFee,
-          trait: JSON.stringify(trait)
+          trait: JSON.stringify(trait),
+          expiry
         }
       }))
 
@@ -697,10 +698,10 @@ async function processOpenseaTraitBid(data: {
   creatorFees: IFee;
   enforceCreatorFee: boolean;
   trait: string;
+  expiry: number;
 }) {
   try {
-    const expiry = 900;
-    const { address, privateKey, slug, offerPrice, creatorFees, enforceCreatorFee, trait } = data
+    const { address, privateKey, slug, offerPrice, creatorFees, enforceCreatorFee, trait, expiry } = data
     const colletionOffer = BigInt(offerPrice)
     await bidOnOpensea(
       address,
