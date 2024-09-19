@@ -224,9 +224,9 @@ async function processNewTask(task: ITask) {
     currentTasks.push(task);
     console.log(GREEN + `Added new task: ${task.contract.slug}` + RESET);
     const jobs = await queue.addBulk([
-      ...(task.selectedMarketplaces.map(m => m.toLowerCase()).includes("opensea") ? [{ name: OPENSEA_SCHEDULE, data: task, opts: { removeOnComplete: true } }] : []),
-      ...(task.selectedMarketplaces.map(m => m.toLowerCase()).includes("blur") ? [{ name: BLUR_SCHEDULE, data: task, opts: { removeOnComplete: true } }] : []),
-      ...(task.selectedMarketplaces.map(m => m.toLowerCase()).includes("magiceden") ? [{ name: MAGICEDEN_SCHEDULE, data: task, opts: { removeOnComplete: true } }] : []),
+      ...(task.selectedMarketplaces.map(m => m.toLowerCase()).includes("opensea") ? [{ name: OPENSEA_SCHEDULE, data: task }] : []),
+      ...(task.selectedMarketplaces.map(m => m.toLowerCase()).includes("blur") ? [{ name: BLUR_SCHEDULE, data: task }] : []),
+      ...(task.selectedMarketplaces.map(m => m.toLowerCase()).includes("magiceden") ? [{ name: MAGICEDEN_SCHEDULE, data: task }] : []),
     ]);
     console.log(`Successfully added ${jobs.length} jobs to the queue.`);
     subscribeToCollections([task]);
@@ -305,6 +305,9 @@ async function stopTask(task: ITask, start: boolean) {
 
     const blurCancelData = parsedBlurBid.map((bid) => ({ name: CANCEL_BLUR_BID, data: { payload: bid, privateKey: task.wallet.privateKey } }))
     await queue.addBulk(cancelData);
+
+
+
     queue.add(CANCEL_MAGICEDEN_BID, { orderIds: parsedMagicedenBid, privateKey: task.wallet.privateKey })
     await queue.addBulk(blurCancelData)
     const count = parsedMagicedenBid.length + cancelData.length + blurCancelData.length;
@@ -390,7 +393,7 @@ async function updateMarketplace(task: ITask) {
     }
 
     if (outgoing.map((marketplace) => marketplace.toLowerCase()).includes("magiceden")) {
-      const magicedenJobs = selectedJobs.filter((job) => job.name === MAGICEDEN_SCHEDULE || job.name === MAGICEDEN_TRAIT_BID)
+      const magicedenJobs = selectedJobs.filter((job) => job.name === MAGICEDEN_SCHEDULE || job.name === MAGICEDEN_TRAIT_BID || job.name === MAGICEDEN_TOKEN_BID)
       await Promise.all(magicedenJobs.map(job => job.remove()));
 
       console.log(RED + `STOPPING ALL WAITING, DELAYED OR PAUSED MAGICEDEN JOBS FOR ${task.contract.slug}` + RESET);
@@ -482,7 +485,7 @@ function connectWebSocket(): void {
         console.error("Failed to parse message:", error);
         return;
       }
-      queue.add(OPENSEA_COUNTERBID, message, { removeOnComplete: true });
+      queue.add(OPENSEA_COUNTERBID, message);
     });
   });
 
