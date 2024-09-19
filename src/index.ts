@@ -404,7 +404,7 @@ async function updateMarketplace(task: ITask) {
 async function updateMultipleTasksStatus(data: { tasks: ITask[], running: boolean }) {
   try {
     const { tasks, running } = data;
-    const jobs = tasks.map((task => ({ name: UPDATE_STATUS, data: task })))
+    const jobs = tasks.map((task => ({ name: UPDATE_STATUS, data: { ...task, running } })))
     await queue.addBulk(jobs)
   } catch (error) {
     console.log(error);
@@ -630,7 +630,7 @@ async function processBlurScheduledBid(task: ITask) {
   try {
     if (!task.running) return
 
-    const expiry = 900;
+    const expiry = task.bidDuration || 900;
     let cachedData = taskCache.get(task._id);
     let WALLET_ADDRESS: string, WALLET_PRIVATE_KEY: string;
 
@@ -666,7 +666,6 @@ async function processBlurScheduledBid(task: ITask) {
 
     if (traitBid) {
       const traits = transformBlurTraits(task.selectedTraits)
-
       const traitJobs = traits.map((trait) => ({
         name: BLUR_TRAIT_BID, data: {
           address: WALLET_ADDRESS,
@@ -674,7 +673,8 @@ async function processBlurScheduledBid(task: ITask) {
           contractAddress,
           offerPrice: offerPrice.toString(),
           slug: task.contract.slug,
-          trait: JSON.stringify(trait)
+          trait: JSON.stringify(trait),
+          expiry
         }
       }))
 
@@ -724,10 +724,10 @@ async function processBlurTraitBid(data: {
   offerPrice: string;
   slug: string;
   trait: string;
+  expiry: number;
 }) {
 
-  const { address, privateKey, contractAddress, offerPrice, slug, trait } = data
-  const expiry = 900
+  const { address, privateKey, contractAddress, offerPrice, slug, trait, expiry } = data
   const collectionOffer = BigInt(offerPrice)
   try {
     await bidOnBlur(address, privateKey, contractAddress, collectionOffer, slug, expiry, trait)
@@ -990,6 +990,7 @@ export interface ITask {
     cancelAllBids: boolean;
     triggerStopOptions: boolean;
   };
+  bidDuration: number
 }
 
 interface OpenseaMessagePayload {
@@ -1067,3 +1068,5 @@ interface OpenseaMessagePayload {
   topic: string;
 
 };
+
+// 5420455035

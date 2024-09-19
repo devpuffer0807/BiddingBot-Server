@@ -9,7 +9,6 @@ config()
 const API_KEY = process.env.API_KEY as string;
 
 const BLUR_API_URL = 'https://api.nfttools.website/blur';
-const EXPIRATION_TIME = 900000; // 15 minutes
 const redis = redisClient.getClient();
 
 const ALCHEMY_API_KEY = process.env.ALCHEMY_API_KEY

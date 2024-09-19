@@ -44,6 +44,7 @@ export interface ITask extends Document {
     maxPurchase: number;
     triggerStopOptions: boolean;
   };
+  bidDuration: number;
 }
 
 const TaskSchema: Schema = new Schema(
@@ -89,6 +90,7 @@ const TaskSchema: Schema = new Schema(
       cancelAllBids: { type: Boolean, default: false },
       triggerStopOptions: { type: Boolean, default: false },
     },
+    bidDuration: { type: Number, required: false, default: 900 },
   },
   { timestamps: true }
 );
