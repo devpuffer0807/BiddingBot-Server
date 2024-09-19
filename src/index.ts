@@ -27,6 +27,7 @@ const RED = '\x1b[31m';
 const currentTasks: ITask[] = [];
 const QUEUE_NAME = 'BIDDING_BOT';
 const OPENSEA_COUNTERBID = "OPENSEA_COUNTERBID"
+const UPDATE_STATUS = "UPDATE_STATUS"
 const OPENSEA_SCHEDULE = "OPENSEA_SCHEDULE"
 const OPENSEA_TRAIT_BID = "OPENSEA_TRAIT_BID"
 const BLUR_TRAIT_BID = "BLUR_TRAIT_BID"
@@ -40,7 +41,7 @@ const CANCEL_BLUR_BID = "CANCEL_BLUR_BID"
 const MAX_RETRIES: number = 5;
 const OPENSEA_API_KEY = process.env.OPENSEA_API_KEY;
 const OPENSEA_WS_URL = `wss://stream.openseabeta.com/socket/websocket?token=${OPENSEA_API_KEY}`;
-const RATE_LIMIT = 16;
+const RATE_LIMIT = 28;
 const MAX_WAITING_QUEUE = 10 * RATE_LIMIT;
 const OPENSEA_PROTOCOL_ADDRESS = "0x0000000000000068F116a894984e2DB1123eB395"
 
@@ -104,6 +105,7 @@ async function startServer() {
     });
 
     await fetchCurrentTasks();
+
   } catch (error) {
     console.error(RED + 'Failed to connect to MongoDB:' + RESET, error);
   }
@@ -120,8 +122,6 @@ wss.on('connection', (ws) => {
   ws.onmessage = async (event: WebSocket.MessageEvent) => {
     try {
       const message = JSON.parse(event.data as string);
-      console.log(BLUE + 'Received WebSocket message:' + RESET, message);
-
       switch (message.endpoint) {
         case 'new-task':
           await processNewTask(message.data);
@@ -188,6 +188,9 @@ const worker = new Worker(QUEUE_NAME, async (job) => {
       case CANCEL_BLUR_BID:
         await blukCancelBlurBid(job.data)
         break;
+      case UPDATE_STATUS:
+        await updateStatus(job.data)
+        break
       default:
         console.log(`Unknown job type: ${job.name}`);
     }
@@ -254,6 +257,15 @@ async function updateStatus(task: ITask) {
         if (task.outbidOptions.counterbid) {
           subscribeToCollections([currentTasks[taskIndex]]);
         }
+
+        const jobs = [
+          ...(task.selectedMarketplaces.map(m => m.toLowerCase()).includes("opensea") ? [{ name: OPENSEA_SCHEDULE, data: { ...task, running: start } }] : []),
+          ...(task.selectedMarketplaces.map(m => m.toLowerCase()).includes("blur") ? [{ name: BLUR_SCHEDULE, data: { ...task, running: start } }] : []),
+          ...(task.selectedMarketplaces.map(m => m.toLowerCase()).includes("magiceden") ? [{ name: MAGICEDEN_SCHEDULE, data: { ...task, running: start } }] : []),
+        ]
+
+        await queue.addBulk(jobs);
+
       } else {
         console.log(YELLOW + `Stopped processing task ${task.contract.slug}` + RESET);
         const jobs = await queue.getJobs(['waiting', 'completed', 'failed', "delayed", "paused"]);
@@ -280,7 +292,6 @@ async function updateStatus(task: ITask) {
           .map((data) => JSON.parse(data))
         const blurCancelData = parsedBlurBid.map((bid) => ({ name: CANCEL_BLUR_BID, data: { payload: bid, privateKey: task.wallet.privateKey } }))
 
-
         await queue.addBulk(cancelData);
         queue.add(CANCEL_MAGICEDEN_BID, { orderIds: parsedMagicedenBid, privateKey: task.wallet.privateKey })
         await queue.addBulk(blurCancelData)
@@ -288,9 +299,9 @@ async function updateStatus(task: ITask) {
         const count = parsedMagicedenBid.length + cancelData.length + blurCancelData.length;
         console.log(`Successfully added ${count} bid cancel jobs to the queue. ${task.contract.slug}`);
 
-        await Promise.all(openseaBids.map(key => redis.del(key)));
-        await Promise.all(magicedenBids.map(key => redis.del(key)));
-        await Promise.all(blurBids.map(key => redis.del(key)));
+        // await Promise.all(openseaBids.map(key => redis.del(key)));
+        // await Promise.all(magicedenBids.map(key => redis.del(key)));
+        // await Promise.all(blurBids.map(key => redis.del(key)));
         if (task.outbidOptions.counterbid) {
           unsubscribeFromCollection(task);
         }
@@ -317,28 +328,89 @@ async function updateMarketplace(task: ITask) {
     const { _id: taskId, selectedMarketplaces } = task;
     const taskIndex = currentTasks.findIndex(task => task._id === taskId);
     const current = currentTasks[taskIndex].selectedMarketplaces;
-
     const outgoing = current.filter(marketplace => !selectedMarketplaces.includes(marketplace));
-    const incoming = current.filter(marketplace => selectedMarketplaces.includes(marketplace));
-    console.log({ outgoing, incoming });
+    const jobs = await queue.getJobs(['waiting', 'completed', 'failed', "delayed", "paused"]);
+    const selectedJobs = jobs.filter((job) => job.data.slug === task.contract.slug || job.data?.contract?.slug === task?.contract?.slug);
+    const incoming = selectedMarketplaces.filter(marketplace => !current.includes(marketplace));
+
+    if (outgoing.map((marketplace) => marketplace.toLowerCase()).includes("opensea")) {
+      const openseaJobs = selectedJobs.filter((job) => job.name === OPENSEA_SCHEDULE || job.name === OPENSEA_TRAIT_BID)
+      await Promise.all(openseaJobs.map(job => job.remove()));
+
+      console.log(RED + `STOPPING ALL WAITING, DELAYED OR PAUSED OPENSEA JOBS FOR ${task.contract.slug}` + RESET);
+
+      const openseaBids = await redis.keys(`opensea:order:${task.contract.slug}:*`);
+      const openseaBidData = await Promise.all(openseaBids.map(key => redis.get(key)));
+      const cancelData = openseaBidData.map(bid => ({ name: CANCEL_OPENSEA_BID, data: { orderHash: bid, privateKey: task.wallet.privateKey } }));
+      await queue.addBulk(cancelData);
+      console.log(RED + `CANCELLING ALL ACTIVE OPENSEA BIDS ${task.contract.slug}` + RESET);
+    }
+
+    if (outgoing.map((marketplace) => marketplace.toLowerCase()).includes("blur")) {
+      const blurJobs = selectedJobs.filter((job) => job.name === BLUR_SCHEDULE || job.name === BLUR_TRAIT_BID)
+      await Promise.all(blurJobs.map(job => job.remove()));
+
+      console.log(RED + `STOPPING ALL WAITING, DELAYED OR PAUSED BLUR JOBS ${task.contract.slug}` + RESET);
+
+      const blurBids = await redis.keys(`blur:order:${task.contract.slug}:*`)
+      const blurBidData = await Promise.all(blurBids.map(key => redis.get(key)));
+      const parsedBlurBid = blurBidData
+        .filter(data => data !== null) // Ensure data is not null
+        .map((data) => JSON.parse(data))
+      const blurCancelData = parsedBlurBid.map((bid) => ({ name: CANCEL_BLUR_BID, data: { payload: bid, privateKey: task.wallet.privateKey } }))
+      await queue.addBulk(blurCancelData)
+      console.log(RED + `CANCELLING ALL ACTIVE BLUR BIDS ${task.contract.slug}` + RESET);
+    }
+
+    if (outgoing.map((marketplace) => marketplace.toLowerCase()).includes("magiceden")) {
+      const magicedenJobs = selectedJobs.filter((job) => job.name === MAGICEDEN_SCHEDULE || job.name === MAGICEDEN_TRAIT_BID)
+      await Promise.all(magicedenJobs.map(job => job.remove()));
+
+      console.log(RED + `STOPPING ALL WAITING, DELAYED OR PAUSED MAGICEDEN JOBS FOR ${task.contract.slug}` + RESET);
+
+      const magicedenBids = await redis.keys(`magiceden:order:${task.contract.slug}:*`);
+      const magicedenBidData = await Promise.all(magicedenBids.map(key => redis.get(key)));
+      const parsedMagicedenBid = magicedenBidData
+        .filter(data => data !== null) // Ensure data is not null
+        .map((data) => JSON.parse(data))
+        .filter((data) => data?.message?.toLowerCase() === "success")
+        .map((data) => data.orderId)
+
+      queue.add(CANCEL_MAGICEDEN_BID, { orderIds: parsedMagicedenBid, privateKey: task.wallet.privateKey })
+      console.log(RED + `CANCELLING ALL ACTIVE MAGICEDEN BIDS FOR ${task.contract.slug}` + RESET);
+    }
+
+    if (incoming.map((marketplace) => marketplace.toLowerCase()).includes("opensea")) {
+      queue.add(OPENSEA_SCHEDULE, task)
+    }
+
+    if (incoming.map((marketplace) => marketplace.toLowerCase()).includes("magiceden")) {
+      queue.add(MAGICEDEN_SCHEDULE, task)
+    }
+
+    if (incoming.map((marketplace) => marketplace.toLowerCase()).includes("blur")) {
+      queue.add(BLUR_SCHEDULE, task)
+    }
 
     if (taskIndex !== -1) {
       currentTasks[taskIndex].selectedMarketplaces = selectedMarketplaces;
     }
 
-    if (outgoing.length > 0) {
-    }
-
-    if (incoming.length > 0) {
-    }
   } catch (error) {
     console.error(RED + `Error updating marketplace for task: ${task._id}` + RESET, error);
   }
 }
 
-async function updateMultipleTasksStatus(data: { taskIds: string[], running: boolean }) {
-  const { taskIds, running } = data;
+async function updateMultipleTasksStatus(data: { tasks: ITask[], running: boolean }) {
+  try {
+    const { tasks, running } = data;
+    const jobs = tasks.map((task => ({ name: UPDATE_STATUS, data: task })))
+    await queue.addBulk(jobs)
+  } catch (error) {
+    console.log(error);
+  }
 }
+
 
 function connectWebSocket(): void {
   ws = new WebSocket(OPENSEA_WS_URL);
@@ -754,6 +826,7 @@ async function processMagicedenTraitBid(data: {
 
 async function bulkCancelOpenseaBid(data: { orderHash: string, privateKey: string }) {
   try {
+
     const { orderHash, privateKey } = data
     await cancelOrder(orderHash, OPENSEA_PROTOCOL_ADDRESS, privateKey)
   } catch (error) {
@@ -860,18 +933,6 @@ function subscribeToCollections(tasks: ITask[]) {
   }
 }
 
-function convertSelectedTraits(selectedTraits: Record<string, string[] | undefined>) {
-  const result: string[] = [];
-  for (const [key, values] of Object.entries(selectedTraits)) {
-    if (values) {
-      for (const value of values) {
-        result.push(`${key}:${value}`);
-      }
-    }
-  }
-  return result;
-}
-
 interface BlurCancelPayload {
   payload: {
     contractAddress: string;
@@ -930,13 +991,6 @@ export interface ITask {
     triggerStopOptions: boolean;
   };
 }
-
-enum TaskType {
-  Collection = "collection",
-  Trait = "trait",
-  Token = "token"
-}
-
 
 interface OpenseaMessagePayload {
 

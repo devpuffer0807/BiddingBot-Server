@@ -33,7 +33,7 @@ export async function getCollectionDetails(slug: string) {
 
     let enforceCreatorFee = false;
 
-    if (collection.fees.length > 1) {
+    if (collection?.fees?.length > 1) {
       creator_fees = {
         [collection.fees[1].recipient]: collection.fees[1].fee * 100
       };
