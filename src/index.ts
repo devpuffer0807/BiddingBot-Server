@@ -14,6 +14,7 @@ import Task from "./models/task.model";
 import { Queue, Worker } from "bullmq";
 import Wallet from "./models/wallet.model";
 import redisClient from "./utils/redis";
+
 const redis = redisClient.getClient()
 
 config()
@@ -34,6 +35,7 @@ const BLUR_TRAIT_BID = "BLUR_TRAIT_BID"
 const BLUR_SCHEDULE = "BLUR_SCHEDULE"
 const MAGICEDEN_SCHEDULE = "MAGICEDEN_SCHEDULE"
 const MAGICEDEN_TOKEN_BID = "MAGICEDEN_TOKEN_BID"
+const OPENSEA_TOKEN_BID = "OPENSEA_TOKEN_BID"
 const MAGICEDEN_TRAIT_BID = "MAGICEDEN_TRAIT_BID"
 const CANCEL_OPENSEA_BID = "CANCEL_OPENSEA_BID"
 const CANCEL_MAGICEDEN_BID = "CANCEL_MAGICEDEN_BID"
@@ -45,7 +47,7 @@ const MAX_RETRIES: number = 5;
 const OPENSEA_API_KEY = process.env.OPENSEA_API_KEY;
 const OPENSEA_WS_URL = `wss://stream.openseabeta.com/socket/websocket?token=${OPENSEA_API_KEY}`;
 const RATE_LIMIT = 30;
-const MAX_WAITING_QUEUE = 10 * RATE_LIMIT;
+const MAX_WAITING_QUEUE = 10000 * RATE_LIMIT;
 const OPENSEA_PROTOCOL_ADDRESS = "0x0000000000000068F116a894984e2DB1123eB395"
 
 const itemLocks = new Map();
@@ -154,6 +156,7 @@ wss.on('connection', (ws) => {
 });
 
 
+
 const worker = new Worker(QUEUE_NAME, async (job) => {
   const itemId = job.data.itemId;
   await waitForUnlock(itemId, job.name);
@@ -168,6 +171,9 @@ const worker = new Worker(QUEUE_NAME, async (job) => {
         break;
       case OPENSEA_TRAIT_BID:
         await processOpenseaTraitBid(job.data)
+        break;
+      case OPENSEA_TOKEN_BID:
+        await processOpenseaTokenBid(job.data)
         break;
       case BLUR_SCHEDULE:
         await processBlurScheduledBid(job.data)
@@ -210,10 +216,7 @@ const worker = new Worker(QUEUE_NAME, async (job) => {
   }
 },
   {
-    connection: {
-      host: "localhost",
-      port: 6379
-    },
+    connection: redis,
     concurrency: RATE_LIMIT,
   },
 );
@@ -306,8 +309,6 @@ async function stopTask(task: ITask, start: boolean) {
     const blurCancelData = parsedBlurBid.map((bid) => ({ name: CANCEL_BLUR_BID, data: { payload: bid, privateKey: task.wallet.privateKey } }))
     await queue.addBulk(cancelData);
 
-
-
     queue.add(CANCEL_MAGICEDEN_BID, { orderIds: parsedMagicedenBid, privateKey: task.wallet.privateKey })
     await queue.addBulk(blurCancelData)
     const count = parsedMagicedenBid.length + cancelData.length + blurCancelData.length;
@@ -364,7 +365,7 @@ async function updateMarketplace(task: ITask) {
     const incoming = selectedMarketplaces.filter(marketplace => !current.includes(marketplace));
 
     if (outgoing.map((marketplace) => marketplace.toLowerCase()).includes("opensea")) {
-      const openseaJobs = selectedJobs.filter((job) => job.name === OPENSEA_SCHEDULE || job.name === OPENSEA_TRAIT_BID)
+      const openseaJobs = selectedJobs.filter((job) => job.name === OPENSEA_SCHEDULE || job.name === OPENSEA_TRAIT_BID || job.name === OPENSEA_TOKEN_BID)
       await Promise.all(openseaJobs.map(job => job.remove()));
 
       console.log(RED + `STOPPING ALL WAITING, DELAYED OR PAUSED OPENSEA JOBS FOR ${task.contract.slug}` + RESET);
@@ -550,7 +551,6 @@ async function processOpenseaCounterBid(data: any) {
     const offerPrice = BigInt(Math.ceil(currentOffer + outbidMargin));
     console.log({ offerPrice: Number(offerPrice) / 1e18 });
 
-
     const protocolAddress = message.payload.payload.protocol_address.toLowerCase();
     const stats = await getCollectionStats(task.contract.slug);
     const floor_price = stats.total.floor_price;
@@ -611,6 +611,7 @@ async function processOpenseaScheduledBid(task: ITask) {
 
     const collectionDetails = await getCollectionDetails(task.contract.slug);
     const traitBid = task.selectedTraits && Object.keys(task.selectedTraits).length > 0
+    const tokenBid = task.tokenIds.length > 0
     const stats = await getCollectionStats(task.contract.slug);
     const floor_price = stats.total.floor_price;
     console.log(GREEN + `Current floor price for ${task.contract.slug}: ${floor_price} ETH` + RESET);
@@ -628,7 +629,21 @@ async function processOpenseaScheduledBid(task: ITask) {
       ? { null: collectionDetails.creator_fees.null }
       : Object.fromEntries(Object.entries(collectionDetails.creator_fees).map(([key, value]) => [key, Number(value)]));
 
-    if (traitBid && collectionDetails.trait_offers_enabled) {
+    if (tokenBid) {
+      const jobs = task.tokenIds.map((token) => ({
+        name: OPENSEA_TOKEN_BID, data: {
+          address: WALLET_ADDRESS,
+          privateKey: WALLET_PRIVATE_KEY,
+          slug: task.contract.slug,
+          offerPrice: offerPrice.toString(),
+          creatorFees,
+          enforceCreatorFee: collectionDetails.enforceCreatorFee,
+          asset: { contractAddress: task.contract.contractAddress, tokenId: token },
+          expiry
+        }
+      }))
+      queue.addBulk(jobs)
+    } else if (!tokenBid && traitBid && collectionDetails.trait_offers_enabled) {
       const traits = transformOpenseaTraits(task.selectedTraits);
       const traitJobs = traits.map((trait) => ({
         name: OPENSEA_TRAIT_BID, data: {
@@ -750,6 +765,35 @@ async function processOpenseaTraitBid(data: {
     );
   } catch (error) {
     console.error(RED + `Error processing OpenSea trait bid for task: ${data.slug}` + RESET, error);
+  }
+}
+
+async function processOpenseaTokenBid(data: {
+  address: string;
+  privateKey: string;
+  slug: string;
+  offerPrice: string;
+  creatorFees: IFee;
+  enforceCreatorFee: boolean;
+  asset: { contractAddress: string, tokenId: number },
+  expiry: number;
+}) {
+  try {
+    const { address, privateKey, slug, offerPrice, creatorFees, enforceCreatorFee, asset, expiry } = data
+    const colletionOffer = BigInt(offerPrice)
+    await bidOnOpensea(address,
+      privateKey,
+      slug,
+      colletionOffer,
+      creatorFees,
+      enforceCreatorFee,
+      expiry,
+      undefined,
+      asset
+    )
+
+  } catch (error) {
+    console.log(error);
   }
 }
 

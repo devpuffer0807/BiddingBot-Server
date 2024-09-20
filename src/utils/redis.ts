@@ -29,7 +29,11 @@ class RedisClient {
 
   private connect() {
     if (!this.client) {
-      this.client = new Redis(getRedisUrl());
+      this.client = new Redis({
+        host: "localhost",
+        port: 6379,
+        maxRetriesPerRequest: null
+      });
     }
     console.log("connected to redis");
   }

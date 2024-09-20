@@ -119,6 +119,50 @@ const types = {
   ]
 };
 
+
+async function buildItemOffer(offerSpecification: ItemOfferSpecification) {
+  try {
+    const {
+      assetContractAddress,
+      tokenId,
+      quantity,
+      priceWei,
+      expirationSeconds,
+      walletAddress
+    } = offerSpecification
+
+    const consideration = await getItemConsideration(
+      assetContractAddress,
+      tokenId,
+      quantity,
+      walletAddress
+    )
+
+    const now = BigInt(Math.floor(Date.now() / 1000))
+    const startTime = now.toString()
+    const endTime = (now + expirationSeconds).toString()
+
+    const offer = {
+      offerer: walletAddress,
+      offer: getOffer(priceWei),
+      consideration,
+      startTime,
+      endTime,
+      orderType: 0,
+      zone: "0x0000000000000000000000000000000000000000",
+      zoneHash:
+        "0x0000000000000000000000000000000000000000000000000000000000000000",
+      salt: getSalt(),
+      conduitKey: "0x0000007b02230091a7ed01230072f7006a004d60a8d4e71d599b8104250f0000",
+      totalOriginalConsiderationItems: consideration.length.toString(),
+      counter: 0,
+    }
+
+    return offer
+  } catch (error) {
+    console.log(error);
+  }
+}
 /**
  * Creates an offer on OpenSea.
  * @param walletAddress - The wallet address of the offerer.
@@ -138,95 +182,41 @@ export async function bidOnOpensea(
   creator_fees: IFee,
   enforceCreatorFee: boolean,
   expiry: number = 900,
-  opensea_traits?: string
+  opensea_traits?: string,
+  asset?: { contractAddress: string, tokenId: number }
 ) {
   const divider = BigNumber.from(10000);
   const roundedNumber = Math.round(Number(offer_price) / 1e14) * 1e14;
   const offerPrice = BigNumber.from(roundedNumber.toString());
+  const wallet = new Wallet(private_key, provider);
   const openseaFee = BigNumber.from(250);
 
-  const payload: IPayload = {
-    criteria: {
-      collection: {
-        slug: slug
-      }
-    },
-    protocol_data: {
-      parameters: {
-        offerer: wallet_address,
-        offer: [
-          {
-            itemType: 1,
-            token: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2',
-            identifierOrCriteria: 0,
-            startAmount: (Date.now() / 1000).toString(),
-            endAmount: (Date.now() / 1000 + 100000).toString()
-          }
-        ],
-        consideration: [],
-        startTime: '1666480886',
-        endTime: '1666680886',
-        orderType: 2,
-        zone: '0x004C00500000aD104D7DBd00e3ae0A5C00560C00',
-        zoneHash:
-          '0x0000000000000000000000000000000000000000000000000000000000000000',
-        conduitKey:
-          '0x0000007b02230091a7ed01230072f7006a004d60a8d4e71d599b8104250f0000',
-        totalOriginalConsiderationItems: 2,
-        counter: '0'
-      },
-      signature: '0x0'
-    },
-    protocol_address: '0x0000000000000068f116a894984e2db1123eb395'
-  }
 
-  const wallet = new Wallet(private_key, provider);
-  const wethContract = new Contract(WETH_CONTRACT_ADDRESS, WETH_MIN_ABI, wallet);
-  const OPENSEA_CONDUIT = "0x1e0049783f008a0085193e00003d00cd54003c71"
-
-  await ensureAllowance(wethContract, wallet.address, offerPrice, OPENSEA_CONDUIT);
-
-  // reset consideration list and count
-  payload.protocol_data.parameters.consideration = [];
-  payload.protocol_data.parameters.totalOriginalConsiderationItems = 2;
-
-  // set correct slug for collection
-  payload.criteria.collection.slug = slug;
-
-  if (opensea_traits && typeof opensea_traits !== undefined) {
-    payload.criteria.trait = JSON.parse(opensea_traits)
-  } else {
-    delete payload.criteria.trait
-  }
-
-  const buildPayload = {
-    quantity: 1,
-    criteria: payload.criteria,
-    offerer: wallet_address,
-    protocol_address: '0x0000000000000068f116a894984e2db1123eb395'
-  };
-
-  try {
-    const data = await buildOffer(buildPayload)
-    if (!data || !data.partialParameters) return
-    payload.protocol_data.parameters.startTime = BigInt(Math.floor(Date.now() / 1000)).toString();
-    payload.protocol_data.parameters.endTime = BigInt(Math.floor(Date.now() / 1000 + expiry)).toString();
-    payload.protocol_data.parameters.offerer = wallet_address;
-    payload.protocol_data.parameters.offer[0].startAmount = offerPrice.toString();
-    payload.protocol_data.parameters.offer[0].token = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2';
-    payload.protocol_data.parameters.offer[0].endAmount = offerPrice.toString();
-    payload.protocol_data.parameters.consideration.push(data.partialParameters.consideration[0]);
+  if (asset) {
+    const offer = await buildItemOffer({
+      assetContractAddress: asset.contractAddress,
+      tokenId: asset.tokenId.toString(),
+      walletAddress: wallet_address,
+      quantity: 1,
+      expirationSeconds: BigInt(expiry),
+      priceWei: BigInt(roundedNumber)
+    })
 
     const opensea_consideration = {
       itemType: 1,
       token: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2',
-      identifierOrCriteria: 0,
-      startAmount: offerPrice.mul(openseaFee).div(divider).toString(),
-      endAmount: offerPrice.mul(openseaFee).div(divider).toString(),
+      identifierOrCriteria: "0",
+      startAmount: +offerPrice.mul(openseaFee).div(divider),
+      endAmount: +offerPrice.mul(openseaFee).div(divider),
       recipient: '0x0000a26b00c1F0DF003000390027140000fAa719'
     };
-    payload.protocol_data.parameters.consideration.push(opensea_consideration);
 
+    if (!offer) {
+      console.log("NO OFFER CREATED FOR OPENSEA");
+      return
+    }
+    offer.consideration.push(opensea_consideration);
+    offer.totalOriginalConsiderationItems = (Number(offer.totalOriginalConsiderationItems) + 1).toString();
     for (const address in creator_fees) {
       let fee: BigNumber | number = creator_fees[address];
       fee = BigNumber.from(Math.round(fee).toString());
@@ -234,37 +224,152 @@ export async function bidOnOpensea(
         const consideration_item = {
           itemType: 1,
           token: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2',
-          identifierOrCriteria: 0,
-          startAmount: offerPrice.mul(fee).div(divider).toString(),
-          endAmount: offerPrice.mul(fee).div(divider).toString(),
+          identifierOrCriteria: "0",
+          startAmount: Number(offerPrice.mul(fee).div(divider)),
+          endAmount: Number(offerPrice.mul(fee).div(divider)),
           recipient: address
         };
-
-        payload.protocol_data.parameters.consideration.push(consideration_item);
-        payload.protocol_data.parameters.totalOriginalConsiderationItems += 1;
+        offer.consideration.push(consideration_item);
+        offer.totalOriginalConsiderationItems = (Number(offer.totalOriginalConsiderationItems) + 1).toString();
       }
     }
 
-    payload.protocol_data.parameters.zone = data.partialParameters.zone;
-    payload.protocol_data.parameters.zoneHash = data.partialParameters.zoneHash;
-    payload.protocol_data.parameters.salt = BigInt(Math.floor(Math.random() * 100_000)).toString();
+    const itemSignature = await signOffer(wallet, offer)
+    const itemResponse = await postItemOffer(offer, itemSignature)
 
-    const counter = await SEAPORT_CONTRACT.getCounter(wallet_address);
+    const itemOrderHash = itemResponse?.order?.order_hash
 
-    payload.protocol_data.parameters.counter = counter.toString();
 
-    const signObj = await wallet._signTypedData(
-      domain,
-      types,
-      payload.protocol_data.parameters
-    );
+    const key = `opensea:order:${slug}:${asset.tokenId}`;
+    await redis.setex(key, expiry, itemOrderHash);
+    const successMessage = `🎉 TOKEN OFFER POSTED TO OPENSEA SUCCESSFULLY FOR: ${slug.toUpperCase()}  TOKEN: ${asset.tokenId} 🎉`
+    console.log(BLUE, JSON.stringify(successMessage), RESET);
+  }
+  else {
+    const divider = BigNumber.from(10000);
+    const roundedNumber = Math.round(Number(offer_price) / 1e14) * 1e14;
+    const offerPrice = BigNumber.from(roundedNumber.toString());
 
-    payload.protocol_data.signature = signObj;
-    payload.protocol_address = '0x0000000000000068f116a894984e2db1123eb395';
+    const payload: IPayload = {
+      criteria: {
+        collection: {
+          slug: slug
+        }
+      },
+      protocol_data: {
+        parameters: {
+          offerer: wallet_address,
+          offer: [
+            {
+              itemType: 1,
+              token: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2',
+              identifierOrCriteria: 0,
+              startAmount: (Date.now() / 1000).toString(),
+              endAmount: (Date.now() / 1000 + 100000).toString()
+            }
+          ],
+          consideration: [],
+          startTime: '1666480886',
+          endTime: '1666680886',
+          orderType: 2,
+          zone: '0x004C00500000aD104D7DBd00e3ae0A5C00560C00',
+          zoneHash:
+            '0x0000000000000000000000000000000000000000000000000000000000000000',
+          conduitKey:
+            '0x0000007b02230091a7ed01230072f7006a004d60a8d4e71d599b8104250f0000',
+          totalOriginalConsiderationItems: 2,
+          counter: '0'
+        },
+        signature: '0x0'
+      },
+      protocol_address: '0x0000000000000068f116a894984e2db1123eb395'
+    }
 
-    await submitOfferToOpensea(payload, expiry, opensea_traits)
-  } catch (error: any) {
-    console.log("opensea error", error);
+    const wethContract = new Contract(WETH_CONTRACT_ADDRESS, WETH_MIN_ABI, wallet);
+    const OPENSEA_CONDUIT = "0x1e0049783f008a0085193e00003d00cd54003c71"
+
+    await ensureAllowance(wethContract, wallet.address, offerPrice, OPENSEA_CONDUIT);
+
+    // reset consideration list and count
+    payload.protocol_data.parameters.consideration = [];
+    payload.protocol_data.parameters.totalOriginalConsiderationItems = 2;
+
+    // set correct slug for collection
+    payload.criteria.collection.slug = slug;
+
+    if (opensea_traits && typeof opensea_traits !== undefined) {
+      payload.criteria.trait = JSON.parse(opensea_traits)
+    } else {
+      delete payload.criteria.trait
+    }
+
+    const buildPayload = {
+      quantity: 1,
+      criteria: payload.criteria,
+      offerer: wallet_address,
+      protocol_address: '0x0000000000000068f116a894984e2db1123eb395'
+    };
+
+    try {
+      const data = await buildOffer(buildPayload)
+      if (!data || !data.partialParameters) return
+      payload.protocol_data.parameters.startTime = BigInt(Math.floor(Date.now() / 1000)).toString();
+      payload.protocol_data.parameters.endTime = BigInt(Math.floor(Date.now() / 1000 + expiry)).toString();
+      payload.protocol_data.parameters.offerer = wallet_address;
+      payload.protocol_data.parameters.offer[0].startAmount = offerPrice.toString();
+      payload.protocol_data.parameters.offer[0].token = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2';
+      payload.protocol_data.parameters.offer[0].endAmount = offerPrice.toString();
+      payload.protocol_data.parameters.consideration.push(data.partialParameters.consideration[0]);
+
+      const opensea_consideration = {
+        itemType: 1,
+        token: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2',
+        identifierOrCriteria: 0,
+        startAmount: offerPrice.mul(openseaFee).div(divider).toString(),
+        endAmount: offerPrice.mul(openseaFee).div(divider).toString(),
+        recipient: '0x0000a26b00c1F0DF003000390027140000fAa719'
+      };
+      payload.protocol_data.parameters.consideration.push(opensea_consideration);
+
+      for (const address in creator_fees) {
+        let fee: BigNumber | number = creator_fees[address];
+        fee = BigNumber.from(Math.round(fee).toString());
+        if (enforceCreatorFee) {
+          const consideration_item = {
+            itemType: 1,
+            token: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2',
+            identifierOrCriteria: 0,
+            startAmount: offerPrice.mul(fee).div(divider).toString(),
+            endAmount: offerPrice.mul(fee).div(divider).toString(),
+            recipient: address
+          };
+
+          payload.protocol_data.parameters.consideration.push(consideration_item);
+          payload.protocol_data.parameters.totalOriginalConsiderationItems += 1;
+        }
+      }
+
+      payload.protocol_data.parameters.zone = data.partialParameters.zone;
+      payload.protocol_data.parameters.zoneHash = data.partialParameters.zoneHash;
+      payload.protocol_data.parameters.salt = BigInt(Math.floor(Math.random() * 100_000)).toString();
+
+      const counter = await SEAPORT_CONTRACT.getCounter(wallet_address);
+
+      payload.protocol_data.parameters.counter = counter.toString();
+
+      const signObj = await wallet._signTypedData(
+        domain,
+        types,
+        payload.protocol_data.parameters
+      );
+
+      payload.protocol_data.signature = signObj;
+      payload.protocol_address = '0x0000000000000068f116a894984e2db1123eb395';
+
+      await submitOfferToOpensea(payload, expiry, opensea_traits)
+    } catch (error: any) {
+      console.log("opensea error", error);
+    }
   }
 };
 
@@ -379,6 +484,79 @@ async function signCancelOrder(orderHash: string, protocolAddress: string, priva
   } catch (error) {
     console.error("Error signing the cancel order message: ", error);
     return null;
+  }
+}
+
+
+async function signOffer(wallet: ethers.Wallet, offer: Record<string, unknown>) {
+  return await wallet._signTypedData(domain, types, offer)
+}
+
+const getOffer = (priceWei: bigint) => {
+  return [
+    {
+      itemType: 1, // ERC 20
+      token: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+      identifierOrCriteria: 0,
+      startAmount: priceWei.toString(),
+      endAmount: priceWei.toString(),
+    },
+  ]
+}
+
+async function postItemOffer(offer: unknown, signature: string) {
+
+  try {
+    const payload = {
+      parameters: offer,
+      signature,
+      protocol_address: SEAPORT_CONTRACT_ADDRESS,
+    }
+
+    const { data } = await limiter.schedule(() => axiosInstance.post(`https://api.nfttools.website/opensea/api/v2/orders/ethereum/seaport/offers`, payload, {
+      headers: {
+        'content-type': 'application/json',
+        'X-NFT-API-Key': API_KEY
+      }
+    }))
+
+    return data
+  } catch (error: any) {
+    console.log(error.response.data);
+  }
+}
+
+
+const getItemConsideration = async (
+  assetContractAddress: string,
+  tokenId: string,
+  quantity: number,
+  walletAddress: string
+
+) => {
+  const fees = [
+    await getItemTokenConsideration(assetContractAddress, tokenId, quantity, walletAddress)
+  ]
+  return fees
+}
+
+const getSalt = () => {
+  return Math.floor(Math.random() * 100_000).toString()
+}
+
+const getItemTokenConsideration = async (
+  assetContractAddress: string,
+  tokenId: string,
+  quantity: number,
+  walletAddress: string
+) => {
+  return {
+    itemType: 2,
+    token: assetContractAddress,
+    identifierOrCriteria: tokenId,
+    startAmount: quantity,
+    endAmount: quantity,
+    recipient: walletAddress,
   }
 }
 
@@ -526,4 +704,13 @@ interface PartialParameters {
   zone: string;
   zoneHash: string;
   [key: string]: any; // Allow additional properties
+}
+
+interface ItemOfferSpecification {
+  assetContractAddress: string
+  tokenId: string
+  quantity: number
+  priceWei: bigint
+  expirationSeconds: bigint
+  walletAddress: string
 }
