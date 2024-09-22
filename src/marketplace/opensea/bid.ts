@@ -405,7 +405,7 @@ async function submitOfferToOpensea(payload: IPayload, expiry = 900, opensea_tra
       : `🎉 COLLECTION OFFER POSTED TO OPENSEA SUCCESSFULLY FOR: ${payload.criteria.collection.slug.toUpperCase()} 🎉`
     console.log(BLUE, successMessage, RESET);
   } catch (error: any) {
-    console.log("opensea post offer error", error.response);
+    console.log("opensea post offer error", error.response.data);
 
   }
 }
@@ -416,19 +416,22 @@ async function submitOfferToOpensea(payload: IPayload, expiry = 900, opensea_tra
  * @param buildPayload - The payload to build the offer.
  */
 async function buildOffer(buildPayload: any) {
-  const { data } = await limiter.schedule(() =>
-    axiosInstance.request<PartialParameters>({
-      method: 'POST',
-      url: `https://api.nfttools.website/opensea/api/v2/offers/build`,
-      headers: {
-        'content-type': 'application/json',
-        'X-NFT-API-Key': API_KEY,
-      },
-      data: JSON.stringify(buildPayload),
-    })
-  );
-
-  return data
+  try {
+    const { data } = await limiter.schedule(() =>
+      axiosInstance.request<PartialParameters>({
+        method: 'POST',
+        url: `https://api.nfttools.website/opensea/api/v2/offers/build`,
+        headers: {
+          'content-type': 'application/json',
+          'X-NFT-API-Key': API_KEY,
+        },
+        data: JSON.stringify(buildPayload),
+      })
+    );
+    return data
+  } catch (error: any) {
+    console.log("opensea build offer error", error.response.data);
+  }
 }
 
 export async function cancelOrder(orderHash: string, protocolAddress: string, privateKey: string) {
