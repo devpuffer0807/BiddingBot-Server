@@ -9,7 +9,7 @@ config()
 
 const API_KEY = process.env.API_KEY as string;
 
-const ALCHEMY_API_KEY = process.env.ALCHEMY_API_KEY
+const ALCHEMY_API_KEY = "HGWgCONolXMB2op5UjPH1YreDCwmSbvx"
 const provider = new ethers.providers.AlchemyProvider('mainnet', ALCHEMY_API_KEY);
 const SEAPORT_CONTRACT = new ethers.Contract(SEAPORT_CONTRACT_ADDRESS, SEAPORT_MIN_ABI, provider);
 

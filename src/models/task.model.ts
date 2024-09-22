@@ -32,7 +32,24 @@ export interface ITask extends Document {
     minType: "percentage" | "eth";
     maxType: "percentage" | "eth";
   };
-
+  openseaBidPrice: {
+    min: number;
+    max: number | null;
+    minType: "percentage" | "eth";
+    maxType: "percentage" | "eth";
+  };
+  magicEdenBidPrice: {
+    min: number;
+    max: number | null;
+    minType: "percentage" | "eth";
+    maxType: "percentage" | "eth";
+  };
+  blurBidPrice: {
+    min: number;
+    max: number | null;
+    minType: "percentage" | "eth";
+    maxType: "percentage" | "eth";
+  };
   stopOptions: {
     pauseAllBids: boolean;
     stopAllBids: boolean;
@@ -44,8 +61,17 @@ export interface ITask extends Document {
     maxPurchase: number;
     triggerStopOptions: boolean;
   };
-  bidDuration: number;
-  tokenIds: number[]
+  bidDuration: {
+    value: number;
+    unit: string;
+  };
+  loopInterval: {
+    value: number;
+    unit: string;
+  };
+  tokenIds: number[];
+  bidType: "collection" | "token";
+
 }
 
 const TaskSchema: Schema = new Schema(
@@ -80,6 +106,24 @@ const TaskSchema: Schema = new Schema(
       minType: { type: String, enum: ["percentage", "eth"], required: true },
       maxType: { type: String, enum: ["percentage", "eth"], required: true },
     },
+    openseaBidPrice: {
+      min: { type: Number, required: true },
+      max: { type: Number, required: false, default: null },
+      minType: { type: String, enum: ["percentage", "eth"], required: true },
+      maxType: { type: String, enum: ["percentage", "eth"], required: true },
+    },
+    blurBidPrice: {
+      min: { type: Number, required: true },
+      max: { type: Number, required: false, default: null },
+      minType: { type: String, enum: ["percentage", "eth"], required: true },
+      maxType: { type: String, enum: ["percentage", "eth"], required: true },
+    },
+    magicEdenBidPrice: {
+      min: { type: Number, required: true },
+      max: { type: Number, required: false, default: null },
+      minType: { type: String, enum: ["percentage", "eth"], required: true },
+      maxType: { type: String, enum: ["percentage", "eth"], required: true },
+    },
     stopOptions: {
       minFloorPrice: { type: Number, required: true },
       maxFloorPrice: { type: Number, required: true },
@@ -91,9 +135,17 @@ const TaskSchema: Schema = new Schema(
       cancelAllBids: { type: Boolean, default: false },
       triggerStopOptions: { type: Boolean, default: false },
     },
-    bidDuration: { type: Number, required: false, default: 900 },
-    tokenIds: { type: [Number], default: [] }, // Add this line
+    bidDuration: {
+      value: { type: Number, required: false, default: 15 },
+      unit: { type: String, required: false, default: "minutes" }
 
+    },
+    loopInterval: {
+      value: { type: Number, required: false, default: 15 },
+      unit: { type: String, required: false, default: "minutes" }
+    },
+    tokenIds: { type: [Number], default: [] },
+    bidType: { type: String, enum: ["collection", "token"], default: "collection" },
   },
   { timestamps: true }
 );

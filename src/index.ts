@@ -29,6 +29,7 @@ const currentTasks: ITask[] = [];
 const QUEUE_NAME = 'BIDDING_BOT';
 const OPENSEA_COUNTERBID = "OPENSEA_COUNTERBID"
 const UPDATE_STATUS = "UPDATE_STATUS"
+
 const OPENSEA_SCHEDULE = "OPENSEA_SCHEDULE"
 const OPENSEA_TRAIT_BID = "OPENSEA_TRAIT_BID"
 const BLUR_TRAIT_BID = "BLUR_TRAIT_BID"
@@ -37,6 +38,7 @@ const MAGICEDEN_SCHEDULE = "MAGICEDEN_SCHEDULE"
 const MAGICEDEN_TOKEN_BID = "MAGICEDEN_TOKEN_BID"
 const OPENSEA_TOKEN_BID = "OPENSEA_TOKEN_BID"
 const MAGICEDEN_TRAIT_BID = "MAGICEDEN_TRAIT_BID"
+
 const CANCEL_OPENSEA_BID = "CANCEL_OPENSEA_BID"
 const CANCEL_MAGICEDEN_BID = "CANCEL_MAGICEDEN_BID"
 const CANCEL_BLUR_BID = "CANCEL_BLUR_BID"
@@ -47,10 +49,12 @@ const MAX_RETRIES: number = 5;
 const OPENSEA_API_KEY = process.env.OPENSEA_API_KEY;
 const OPENSEA_WS_URL = `wss://stream.openseabeta.com/socket/websocket?token=${OPENSEA_API_KEY}`;
 const RATE_LIMIT = 30;
-const MAX_WAITING_QUEUE = 10000 * RATE_LIMIT;
+const MAX_WAITING_QUEUE = 10 * RATE_LIMIT;
 const OPENSEA_PROTOCOL_ADDRESS = "0x0000000000000068F116a894984e2DB1123eB395"
 
 const itemLocks = new Map();
+
+// create queue
 const queue = new Queue(QUEUE_NAME);
 
 const app = express();
@@ -286,9 +290,12 @@ async function stopTask(task: ITask, start: boolean) {
       currentTasks[taskIndex].running = start;
     }
     console.log(YELLOW + `Stopped processing task ${task.contract.slug}` + RESET);
+
     const jobs = await queue.getJobs(['waiting', 'completed', 'failed', "delayed", "paused"]);
+
     const stoppedJob = jobs.filter((job) => job.data.slug === task.contract.slug || job.data?.contract?.slug === task?.contract?.slug);
     await Promise.all(stoppedJob.map(job => job.remove()));
+
     const openseaBids = await redis.keys(`opensea:order:${task.contract.slug}:*`);
     const openseaBidData = await Promise.all(openseaBids.map(key => redis.get(key)));
     const cancelData = openseaBidData.map(bid => ({ name: CANCEL_OPENSEA_BID, data: { orderHash: bid, privateKey: task.wallet.privateKey } }));
@@ -537,7 +544,10 @@ async function processOpenseaCounterBid(data: any) {
     }
     console.log(GREEN + `Counterbidding for collection: ${task.contract.slug}` + RESET); // Log message added
 
-    const expiry = task.bidDuration || 900;
+    const expiry = task.bidDuration.unit === 'minutes' ? task.bidDuration.value * 60 :
+      task.bidDuration.unit === 'hours' ? task.bidDuration.value * 3600 :
+        task.bidDuration.unit === 'days' ? task.bidDuration.value * 86400 :
+          task.bidDuration.value * 60;
     const { address: WALLET_ADDRESS, privateKey: WALLET_PRIVATE_KEY } = task.wallet;
     const collectionDetails = await getCollectionDetails(task.contract.slug);
     const creatorFees: IFee = collectionDetails.creator_fees.null !== undefined
@@ -592,7 +602,10 @@ async function processOpenseaScheduledBid(task: ITask) {
   try {
     if (!task.running || !task.selectedMarketplaces.map((marketplace) => marketplace.toLowerCase()).includes("opensea")) return
 
-    const expiry = task.bidDuration || 900
+    const expiry = task.bidDuration.unit === 'minutes' ? task.bidDuration.value * 60 :
+      task.bidDuration.unit === 'hours' ? task.bidDuration.value * 3600 :
+        task.bidDuration.unit === 'days' ? task.bidDuration.value * 86400 :
+          task.bidDuration.value; // Default to seconds if unit is not recognized
     let cachedData = taskCache.get(task._id);
     let WALLET_ADDRESS: string, WALLET_PRIVATE_KEY: string;
 
@@ -611,7 +624,7 @@ async function processOpenseaScheduledBid(task: ITask) {
 
     const collectionDetails = await getCollectionDetails(task.contract.slug);
     const traitBid = task.selectedTraits && Object.keys(task.selectedTraits).length > 0
-    const tokenBid = task.tokenIds.length > 0
+    const tokenBid = task.bidType === "token" && task.tokenIds.length > 0
     const stats = await getCollectionStats(task.contract.slug);
     const floor_price = stats.total.floor_price;
     console.log(GREEN + `Current floor price for ${task.contract.slug}: ${floor_price} ETH` + RESET);
@@ -631,7 +644,8 @@ async function processOpenseaScheduledBid(task: ITask) {
 
     if (tokenBid) {
       const jobs = task.tokenIds.map((token) => ({
-        name: OPENSEA_TOKEN_BID, data: {
+        name: OPENSEA_TOKEN_BID,
+        data: {
           address: WALLET_ADDRESS,
           privateKey: WALLET_PRIVATE_KEY,
           slug: task.contract.slug,
@@ -642,8 +656,8 @@ async function processOpenseaScheduledBid(task: ITask) {
           expiry
         }
       }))
-      queue.addBulk(jobs)
-    } else if (!tokenBid && traitBid && collectionDetails.trait_offers_enabled) {
+      await queue.addBulk(jobs)
+    } else if (traitBid && collectionDetails.trait_offers_enabled) {
       const traits = transformOpenseaTraits(task.selectedTraits);
       const traitJobs = traits.map((trait) => ({
         name: OPENSEA_TRAIT_BID, data: {
@@ -681,7 +695,10 @@ async function processBlurScheduledBid(task: ITask) {
   try {
     if (!task.running || !task.selectedMarketplaces.map((marketplace) => marketplace.toLowerCase()).includes("blur")) return
 
-    const expiry = task.bidDuration || 900;
+    const expiry = task.bidDuration.unit === 'minutes' ? task.bidDuration.value * 60 :
+      task.bidDuration.unit === 'hours' ? task.bidDuration.value * 3600 :
+        task.bidDuration.unit === 'days' ? task.bidDuration.value * 86400 :
+          task.bidDuration.value * 60;
     let cachedData = taskCache.get(task._id);
     let WALLET_ADDRESS: string, WALLET_PRIVATE_KEY: string;
 
@@ -836,10 +853,15 @@ async function processMagicedenScheduledBid(task: ITask) {
     }
 
     const traitBid = task.selectedTraits && Object.keys(task.selectedTraits).length > 0
-    const tokenBid = task.tokenIds.length > 0
+    const tokenBid = task.bidType === "token" && task.tokenIds.length > 0
     const contractAddress = task.contract.contractAddress
 
-    const duration = task.bidDuration / 60 || 15; // minutes
+    const expiry = task.bidDuration.unit === 'minutes' ? task.bidDuration.value * 60 :
+      task.bidDuration.unit === 'hours' ? task.bidDuration.value * 3600 :
+        task.bidDuration.unit === 'days' ? task.bidDuration.value * 86400 :
+          task.bidDuration.value * 60;
+
+    const duration = expiry / 60 || 15; // minutes
     const currentTime = new Date().getTime();
     const expiration = Math.floor((currentTime + (duration * 60 * 1000)) / 1000);
     const stats = await getCollectionStats(task.contract.slug);
@@ -870,7 +892,7 @@ async function processMagicedenScheduledBid(task: ITask) {
       }))
       queue.addBulk(jobs)
     }
-    else if (!tokenBid && traitBid) {
+    else if (traitBid) {
       const traits = Object.entries(task.selectedTraits).flatMap(([key, values]) =>
         values.map(value => ({ attributeKey: key, attributeValue: value }))
       );
@@ -1062,15 +1084,13 @@ interface BlurCancelPayload {
   };
   privateKey: string;
 }
-
 export interface ITask {
   _id: string;
-  user: string;
+  user: string
   contract: {
     slug: string;
     contractAddress: string;
   };
-  tokenIds: number[];
   wallet: {
     address: string;
     privateKey: string;
@@ -1096,6 +1116,28 @@ export interface ITask {
     minType: "percentage" | "eth";
     maxType: "percentage" | "eth";
   };
+
+  openseaBidPrice: {
+    min: number;
+    max: number | null;
+    minType: "percentage" | "eth";
+    maxType: "percentage" | "eth";
+  };
+
+  blurBidPrice: {
+    min: number;
+    max: number | null;
+    minType: "percentage" | "eth";
+    maxType: "percentage" | "eth";
+  };
+
+  magicEdenBidPrice: {
+    min: number;
+    max: number | null;
+    minType: "percentage" | "eth";
+    maxType: "percentage" | "eth";
+  };
+
   stopOptions: {
     minFloorPrice: number | null;
     maxFloorPrice: number | null;
@@ -1107,9 +1149,11 @@ export interface ITask {
     cancelAllBids: boolean;
     triggerStopOptions: boolean;
   };
-  bidDuration: number
+  bidDuration: { value: number; unit: string };
+  tokenIds: number[];
+  bidType: string;
+  loopInterval: { value: number; unit: string };
 }
-
 interface OpenseaMessagePayload {
 
   event: string;
