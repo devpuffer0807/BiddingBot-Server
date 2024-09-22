@@ -602,10 +602,10 @@ async function processOpenseaScheduledBid(task: ITask) {
   try {
     if (!task.running || !task.selectedMarketplaces.map((marketplace) => marketplace.toLowerCase()).includes("opensea")) return
 
-    const expiry = task.bidDuration.unit === 'minutes' ? task.bidDuration.value * 60 :
-      task.bidDuration.unit === 'hours' ? task.bidDuration.value * 3600 :
-        task.bidDuration.unit === 'days' ? task.bidDuration.value * 86400 :
-          task.bidDuration.value; // Default to seconds if unit is not recognized
+    const expiry = task?.bidDuration?.unit === 'minutes' ? task.bidDuration.value * 60 :
+      task?.bidDuration?.unit === 'hours' ? task.bidDuration.value * 3600 :
+        task?.bidDuration?.unit === 'days' ? task.bidDuration.value * 86400 :
+          900; // Default to seconds if unit is not recognized
     let cachedData = taskCache.get(task._id);
     let WALLET_ADDRESS: string, WALLET_PRIVATE_KEY: string;
 
