@@ -4,7 +4,7 @@ import bodyParser from "body-parser";
 import cors from "cors";
 import WebSocket, { Server as WebSocketServer } from 'ws';
 import http from 'http';
-import { initialize } from "./init";
+import { API_KEY, initialize } from "./init";
 import { bidOnOpensea, cancelOrder, IFee } from "./marketplace/opensea";
 import { bidOnBlur, cancelBlurBid } from "./marketplace/blur/bid";
 import { bidOnMagiceden, canelMagicEdenBid } from "./marketplace/magiceden";
@@ -24,6 +24,7 @@ export const RESET = '\x1b[0m';
 const GREEN = '\x1b[32m';
 const YELLOW = '\x1b[33m';
 const RED = '\x1b[31m';
+const GOLD = '\x1b[33m'; // Added GOLD color constant
 
 const currentTasks: ITask[] = [];
 const QUEUE_NAME = 'BIDDING_BOT';
@@ -47,7 +48,8 @@ const STOP_TASK = "STOP_TASK"
 
 const MAX_RETRIES: number = 5;
 const OPENSEA_API_KEY = process.env.OPENSEA_API_KEY;
-const OPENSEA_WS_URL = `wss://stream.openseabeta.com/socket/websocket?token=${OPENSEA_API_KEY}`;
+const OPENSEA_WS_URL = `ws://localhost:8080?token=8fa3d411-a50c-43cb-ac4e-1306575ac586`;
+
 const RATE_LIMIT = 30;
 const MAX_WAITING_QUEUE = 10 * RATE_LIMIT;
 const OPENSEA_PROTOCOL_ADDRESS = "0x0000000000000068F116a894984e2DB1123eB395"
@@ -113,7 +115,7 @@ async function startServer() {
     });
 
     await fetchCurrentTasks();
-
+    await queue.drain(true)
   } catch (error) {
     console.error(RED + 'Failed to connect to MongoDB:' + RESET, error);
   }
@@ -168,7 +170,7 @@ const worker = new Worker(QUEUE_NAME, async (job) => {
     itemLocks.set(itemId, true);
     switch (job.name) {
       case OPENSEA_COUNTERBID:
-        await processOpenseaCounterBid(job.data)
+        await handleCounterBid(job.data)
         break;
       case OPENSEA_SCHEDULE:
         await processOpenseaScheduledBid(job.data)
@@ -268,7 +270,10 @@ async function startTask(task: ITask, start: boolean) {
     }
     console.log(GREEN + `Updated task ${task.contract.slug} running status to: ${start}`.toUpperCase() + RESET);
     if (task.outbidOptions.counterbid) {
-      subscribeToCollections([currentTasks[taskIndex]]);
+      console.log("subscribing to collection: ", task.contract.slug);
+
+      const newTask = { ...task, running: true }
+      subscribeToCollections([newTask]);
     }
 
     const jobs = [
@@ -352,8 +357,10 @@ async function updateStatus(task: ITask) {
 
 function unsubscribeFromCollection(task: ITask) {
   const unsubscribeMessage = {
-    "topic": `collection:${task.contract.slug}`,
-    "event": "phx_leave",
+    "topic": task.contract.slug,
+    "contractAddress": task.contract.contractAddress,
+    "event": "leave_the_party",
+    "clientId": task._id.toString(),
     "payload": {},
     "ref": 0
   };
@@ -458,8 +465,7 @@ async function updateMultipleTasksStatus(data: { tasks: ITask[], running: boolea
 function connectWebSocket(): void {
   ws = new WebSocket(OPENSEA_WS_URL);
   ws.addEventListener("open", function open() {
-    console.log("Connected to OPENSEA Websocket");
-
+    console.log(GOLD + "CONNECTED TO MARKETPLACE EVENTS WEBSCKET" + RESET);
     retryCount = 0;
     if (reconnectTimeoutId !== null) {
       clearTimeout(reconnectTimeoutId);
@@ -468,43 +474,32 @@ function connectWebSocket(): void {
     if (heartbeatIntervalId !== null) {
       clearInterval(heartbeatIntervalId);
     }
-    heartbeatIntervalId = setInterval(() => {
-      if (ws) {
-        ws.send(
-          JSON.stringify({
-            topic: "phoenix",
-            event: "heartbeat",
-            payload: {},
-            ref: 0,
-          })
-        );
-      }
-    }, 30000);
+
 
     if (currentTasks.length > 0) {
       subscribeToCollections(currentTasks as unknown as ITask[])
     }
 
-    ws.on("message", function incoming(data: string) {
-      let message;
+    ws.on("message", async function incoming(data: string) {
       try {
-        message = JSON.parse(data)
+        console.log(GOLD, JSON.stringify(data.toString()), RESET);
+        await handleCounterBid(data);
+
       } catch (error) {
-        console.error("Failed to parse message:", error);
-        return;
+        console.log(error);
       }
-      queue.add(OPENSEA_COUNTERBID, message);
+      // queue.add(OPENSEA_COUNTERBID, message);
     });
   });
 
-  ws.addEventListener("close", function close() {
-    console.log("Disconnected from OpenSea Stream API");
-    if (heartbeatIntervalId !== null) {
-      clearInterval(heartbeatIntervalId);
-      heartbeatIntervalId = null;
-    }
-    attemptReconnect();
-  });
+  // ws.addEventListener("close", function close() {
+  //   console.log("Disconnected from OpenSea Stream API");
+  //   if (heartbeatIntervalId !== null) {
+  //     clearInterval(heartbeatIntervalId);
+  //     heartbeatIntervalId = null;
+  //   }
+  //   attemptReconnect();
+  // });
 
   ws.addEventListener("error", function error(err) {
     if (ws) {
@@ -527,74 +522,75 @@ function attemptReconnect(): void {
   }
 }
 
-async function processOpenseaCounterBid(data: any) {
-  try {
-    const message = data as OpenseaMessagePayload;
-    if (!message.payload || !message.payload.payload || !message.payload.payload.protocol_data) return;
-    const task = currentTasks.find(task => task.contract.slug === message.payload.payload.collection.slug);
-    if (!task || !task.running || !task.outbidOptions.counterbid || !task.selectedMarketplaces.map(m => m.toLowerCase()).includes("opensea")) return;
-    const offerer = message.payload.payload.protocol_data.parameters.offerer;
+async function handleCounterBid(data: any) {
+  // try {
+  //   const message = data as OpenseaMessagePayload;
+  //   console.log(GOLD + JSON.stringify(message) + RESET);
+  //   if (!message.payload || !message.payload.payload || !message.payload.payload.protocol_data) return;
+  //   const task = currentTasks.find(task => task.contract.slug === message.payload.payload.collection.slug);
+  //   if (!task || !task.running || !task.outbidOptions.counterbid || !task.selectedMarketplaces.map(m => m.toLowerCase()).includes("opensea")) return;
+  //   const offerer = message.payload.payload.protocol_data.parameters.offerer;
 
-    const ownWallet = walletsArr
-      .map((address) => address.toLowerCase())
-      .includes(offerer.toLowerCase());
+  //   const ownWallet = walletsArr
+  //     .map((address) => address.toLowerCase())
+  //     .includes(offerer.toLowerCase());
 
-    if (ownWallet) {
-      return;
-    }
-    console.log(GREEN + `Counterbidding for collection: ${task.contract.slug}` + RESET); // Log message added
+  //   if (ownWallet) {
+  //     return;
+  //   }
+  //   console.log(GREEN + `Counterbidding for collection: ${task.contract.slug}` + RESET); // Log message added
 
-    const expiry = task.bidDuration.unit === 'minutes' ? task.bidDuration.value * 60 :
-      task.bidDuration.unit === 'hours' ? task.bidDuration.value * 3600 :
-        task.bidDuration.unit === 'days' ? task.bidDuration.value * 86400 :
-          task.bidDuration.value * 60;
-    const { address: WALLET_ADDRESS, privateKey: WALLET_PRIVATE_KEY } = task.wallet;
-    const collectionDetails = await getCollectionDetails(task.contract.slug);
-    const creatorFees: IFee = collectionDetails.creator_fees.null !== undefined
-      ? { null: collectionDetails.creator_fees.null }
-      : Object.fromEntries(Object.entries(collectionDetails.creator_fees).map(([key, value]) => [key, Number(value)]));
+  //   const expiry = task?.bidDuration?.unit === 'minutes' ? task.bidDuration.value * 60 :
+  //     task?.bidDuration?.unit === 'hours' ? task.bidDuration.value * 3600 :
+  //       task?.bidDuration?.unit === 'days' ? task.bidDuration.value * 86400 :
+  //         task.bidDuration?.value * 60;
+  //   const { address: WALLET_ADDRESS, privateKey: WALLET_PRIVATE_KEY } = task.wallet;
+  //   const collectionDetails = await getCollectionDetails(task.contract.slug);
+  //   const creatorFees: IFee = collectionDetails.creator_fees.null !== undefined
+  //     ? { null: collectionDetails.creator_fees.null }
+  //     : Object.fromEntries(Object.entries(collectionDetails.creator_fees).map(([key, value]) => [key, Number(value)]));
 
-    const outbidMargin = Number(task.outbidOptions.openseaOutbidMargin) * 1e18;
-    const currentOffer = Number(message.payload.payload.base_price);
+  //   const outbidMargin = Number(task.outbidOptions.openseaOutbidMargin) * 1e18;
+  //   const currentOffer = Number(message.payload.payload.base_price);
 
-    console.log({ currentOffer, outbidMargin });
-    const offerPrice = BigInt(Math.ceil(currentOffer + outbidMargin));
-    console.log({ offerPrice: Number(offerPrice) / 1e18 });
+  //   console.log({ currentOffer, outbidMargin });
+  //   const offerPrice = BigInt(Math.ceil(currentOffer + outbidMargin));
+  //   console.log({ offerPrice: Number(offerPrice) / 1e18 });
 
-    const protocolAddress = message.payload.payload.protocol_address.toLowerCase();
-    const stats = await getCollectionStats(task.contract.slug);
-    const floor_price = stats.total.floor_price;
+  //   const protocolAddress = message.payload.payload.protocol_address.toLowerCase();
+  //   const stats = await getCollectionStats(task.contract.slug);
+  //   const floor_price = stats.total.floor_price;
 
-    let maxOfferEth: number;
-    if (task.bidPrice.maxType === "percentage") {
-      maxOfferEth = Number((floor_price * (task.bidPrice.max || 0) / 100).toFixed(4));
-    } else {
-      maxOfferEth = task.bidPrice.max || 0;
-    }
-    const maxOffer = BigInt(Math.ceil(maxOfferEth * 1e18));
+  //   let maxOfferEth: number;
+  //   if (task.bidPrice.maxType === "percentage") {
+  //     maxOfferEth = Number((floor_price * (task.bidPrice.max || 0) / 100).toFixed(4));
+  //   } else {
+  //     maxOfferEth = task.bidPrice.max || 0;
+  //   }
+  //   const maxOffer = BigInt(Math.ceil(maxOfferEth * 1e18));
 
-    if (maxOffer < offerPrice) {
-      console.log(RED + 'OFFER PRICE IS GREATER THAN MAX OFFER' + RESET);
-      return
-    }
+  //   if (maxOffer < offerPrice) {
+  //     console.log(RED + 'OFFER PRICE IS GREATER THAN MAX OFFER' + RESET);
+  //     return
+  //   }
 
-    if (protocolAddress === OPENSEA_PROTOCOL_ADDRESS.toLowerCase()) {
-      if (message.payload.event_type === "collection_offer") {
-        await bidOnOpensea(WALLET_ADDRESS, WALLET_PRIVATE_KEY, task.contract.slug, offerPrice, creatorFees, collectionDetails.enforceCreatorFee, expiry);
-      } else if (message.payload.event_type === "trait_offer") {
-        const traitType = message.payload.payload.trait_criteria?.trait_type;
-        if (traitType) {
-          const traitValid = task.selectedTraits[traitType]?.includes(message.payload.payload.trait_criteria?.trait_name as string);
-          if (traitValid) {
-            const trait = JSON.stringify({ type: traitType, value: message.payload.payload.trait_criteria?.trait_name });
-            await bidOnOpensea(WALLET_ADDRESS, WALLET_PRIVATE_KEY, task.contract.slug, offerPrice, creatorFees, collectionDetails.enforceCreatorFee, expiry, trait);
-          }
-        }
-      }
-    }
-  } catch (error) {
-    console.error(RED + 'Error processing OpenSea counter bid' + RESET, error);
-  }
+  //   if (protocolAddress === OPENSEA_PROTOCOL_ADDRESS.toLowerCase()) {
+  //     if (message.payload.event_type === "collection_offer") {
+  //       await bidOnOpensea(WALLET_ADDRESS, WALLET_PRIVATE_KEY, task.contract.slug, offerPrice, creatorFees, collectionDetails.enforceCreatorFee, expiry);
+  //     } else if (message.payload.event_type === "trait_offer") {
+  //       const traitType = message.payload.payload.trait_criteria?.trait_type;
+  //       if (traitType) {
+  //         const traitValid = task.selectedTraits[traitType]?.includes(message.payload.payload.trait_criteria?.trait_name as string);
+  //         if (traitValid) {
+  //           const trait = JSON.stringify({ type: traitType, value: message.payload.payload.trait_criteria?.trait_name });
+  //           await bidOnOpensea(WALLET_ADDRESS, WALLET_PRIVATE_KEY, task.contract.slug, offerPrice, creatorFees, collectionDetails.enforceCreatorFee, expiry, trait);
+  //         }
+  //       }
+  //     }
+  //   }
+  // } catch (error) {
+  //   console.error(RED + 'Error processing OpenSea counter bid' + RESET, error);
+  // }
 }
 
 
@@ -1033,7 +1029,6 @@ async function waitForUnlock(itemId: string, jobType: string) {
 
 function transformOpenseaTraits(selectedTraits: Record<string, string[]>): { type: string; value: string }[] {
   const result: { type: string; value: string }[] = [];
-
   for (const [traitType, values] of Object.entries(selectedTraits)) {
     for (const value of values) {
       if (value.includes(',')) {
@@ -1046,26 +1041,94 @@ function transformOpenseaTraits(selectedTraits: Record<string, string[]>): { typ
       }
     }
   }
-
   return result;
 }
 
 function subscribeToCollections(tasks: ITask[]) {
   try {
     tasks.forEach((task) => {
-      const subscriptionMessage = {
-        "topic": `collection:${task.contract.slug}`,
-        "event": "phx_join",
-        "payload": {},
-        "ref": 0
-      };
-      if (task.running && task.outbidOptions.counterbid) {
-        ws.send(JSON.stringify(subscriptionMessage));
+
+      const connectToOpensea = task.selectedMarketplaces.map((marketplace) => marketplace.toLowerCase()).includes("opensea")
+      const connectToBlur = task.selectedMarketplaces.map((marketplace) => marketplace.toLowerCase()).includes("blur")
+      const connectToMagiceden = task.selectedMarketplaces.map((marketplace) => marketplace.toLowerCase()).includes("magiceden")
+
+
+      if (connectToOpensea && task.outbidOptions.counterbid && task.running) {
+        const openseaSubscriptionMessage = {
+          "topic": task.contract.slug,
+          "slug": task.contract.slug,
+          "contractAddress": task.contract.contractAddress,
+          "event": "join_the_party",
+          "clientId": task._id.toString(),
+          "payload": {},
+          "ref": 0
+        }
+
+        ws.send(JSON.stringify(openseaSubscriptionMessage));
+
         console.log('----------------------------------------------------------------------');
-        console.log(`SUBSCRIBED TO COLLECTION: ${task.contract.slug}`);
+        console.log(`SUBSCRIBED TO COLLECTION: ${task.contract.slug} OPENSEA`);
         console.log('----------------------------------------------------------------------');
+
+        setInterval(() => {
+          if (ws) {
+            ws.send(
+              JSON.stringify({
+                event: "ping",
+                clientId: task._id.toString()
+              })
+            );
+          }
+        }, 30000);
+      }
+
+      if (connectToMagiceden && task.outbidOptions.counterbid && task.running) {
+        const magicedenSubscriptionMessage = {
+          "topic": task.contract.slug,
+          "slug": task.contract.slug,
+          "contractAddress": task.contract.contractAddress,
+          "event": "join_the_party",
+          "clientId": task._id.toString(),
+          "payload": {},
+          "ref": 0
+        }
+
+        ws.send(JSON.stringify(magicedenSubscriptionMessage));
+        console.log('----------------------------------------------------------------------');
+        console.log(`SUBSCRIBED TO COLLECTION: ${task.contract.slug} MAGICEDEN`);
+        console.log('----------------------------------------------------------------------');
+
+        setInterval(() => {
+          if (ws) {
+            ws.send(
+              JSON.stringify({
+                event: "ping",
+                clientId: task._id.toString()
+              })
+            );
+          }
+        }, 30000);
+      }
+
+      if (connectToBlur && task.outbidOptions.counterbid && task.running) {
+        const blurSubscriptionMessage = {
+          "topic": task.contract.slug,
+          "slug": task.contract.slug,
+          "contractAddress": task.contract.contractAddress,
+          "event": "join_the_party",
+          "clientId": task.user.toString(),
+          "payload": {},
+          "ref": 0
+        }
+
+        ws.send(JSON.stringify(blurSubscriptionMessage));
+        console.log('----------------------------------------------------------------------');
+        console.log(`SUBSCRIBED TO COLLECTION: ${task.contract.slug} BLUR`);
+        console.log('----------------------------------------------------------------------');
+
       }
     });
+
   } catch (error) {
     console.error(RED + 'Error subscribing to collections' + RESET, error);
   }
