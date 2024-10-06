@@ -256,6 +256,46 @@ export async function cancelBlurBid(data: BlurCancelPayload) {
   }
 }
 
+export async function fetchBlurBid(collection: string, criteriaType: 'TRAIT' | 'COLLECTION', criteriaValue: Record<string, string>) {
+  const url = `https://api.nfttools.website/blur/v1/collections/${collection}/executable-bids`;
+  try {
+    const { data } = await limiter.schedule(() => axiosInstance.get<BlurBidResponse>(url, {
+      params: {
+        filters: JSON.stringify({
+          criteria: {
+            type: criteriaType,
+            value: criteriaValue
+          }
+        })
+      },
+      headers: {  // Moved headers into the same object
+        'content-type': 'application/json',
+        'X-NFT-API-Key': API_KEY,
+      }
+    }));
+
+    console.log({ data: JSON.stringify(data), criteriaValue });
+
+    return data;
+  } catch (error: any) {
+    console.error("Error fetching executable bids:", error.response?.data || error.message);
+  }
+}
+
+interface PriceLevel {
+  criteriaType: string;
+  criteriaValue: Record<string, unknown>;
+  price: string;
+  executableSize: number;
+  numberBidders: number;
+  bidderAddressesSample: any[];
+}
+
+interface BlurBidResponse {
+  success: boolean;
+  priceLevels: PriceLevel[];
+}
+
 interface BlurCancelPayload {
   payload: {
     contractAddress: string;

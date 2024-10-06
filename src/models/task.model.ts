@@ -71,7 +71,7 @@ export interface ITask extends Document {
   };
   tokenIds: number[];
   bidType: "collection" | "token";
-
+  bidPriceType: "GENERAL_BID_PRICE" | "MARKETPLACE_BID_PRICE";
 }
 
 const TaskSchema: Schema = new Schema(
@@ -146,6 +146,8 @@ const TaskSchema: Schema = new Schema(
     },
     tokenIds: { type: [Number], default: [] },
     bidType: { type: String, enum: ["collection", "token"], default: "collection" },
+    bidPriceType: { type: String, enum: ["GENERAL_BID_PRICE", "MARKETPLACE_BID_PRICE"], default: "general" },
+
   },
   { timestamps: true }
 );

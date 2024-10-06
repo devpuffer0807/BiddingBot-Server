@@ -185,8 +185,8 @@ export async function bidOnOpensea(
   opensea_traits?: string,
   asset?: { contractAddress: string, tokenId: number }
 ) {
-  const divider = BigNumber.from(10000);
-  const roundedNumber = Math.round(Number(offer_price) / 1e14) * 1e14;
+  const divider = BigNumber.from(1000000);
+  const roundedNumber = Math.round(Number(offer_price) / 1e12) * 1e12;
   const offerPrice = BigNumber.from(roundedNumber.toString());
   const wallet = new Wallet(private_key, provider);
   const openseaFee = BigNumber.from(250);
@@ -562,6 +562,58 @@ const getItemTokenConsideration = async (
     recipient: walletAddress,
   }
 }
+
+export async function fetchOpenseaOffers(
+  offerType: 'COLLECTION' | 'TRAIT' | 'TOKEN',
+  collectionSlug: string,
+  identifiers: Record<string, string> | string
+) {
+  try {
+    if (offerType === 'COLLECTION') {
+      const url = `https://api.nfttools.website/opensea/api/v2/offers/collection/${collectionSlug}`;
+      const { data } = await limiter.schedule(() => axiosInstance.get(url, {
+        headers: {
+          'accept': 'application/json',
+          'X-NFT-API-Key': API_KEY
+        }
+      }))
+      const offers = data.offers.sort((a: any, b: any) => +b.price.value - +a.price.value)[0].price.value
+      return offers
+    } else if (offerType === 'TRAIT') {
+      const trait = identifiers as Record<string, string>;
+      const url = `https://api.nfttools.website/opensea/api/v2/offers/collection/${collectionSlug}/traits`;
+      const queryParams = {
+        type: trait.type,
+        value: trait.value
+      };
+      const { data } = await limiter.schedule(() => axiosInstance.get(url, {
+        headers: {
+          'accept': 'application/json',
+          'X-NFT-API-Key': API_KEY
+        },
+        params: queryParams
+      }))
+
+      const offers = data?.offers?.sort((a: any, b: any) => +b.price.value - +a.price.value)[0].price.value || 0
+      return offers
+    } else if (offerType === 'TOKEN') {
+      const token = identifiers as string;
+      const url = `https://api.nfttools.website/opensea/api/v2/offers/collection/${collectionSlug}/nfts/${token}/best`;
+      const { data } = await limiter.schedule(() => axiosInstance.get(url, {
+        headers: {
+          'accept': 'application/json',
+          'X-NFT-API-Key': API_KEY
+        }
+      }))
+      return data.price.value;
+    } else {
+      throw new Error("Invalid offer type");
+    }
+  } catch (error) {
+    console.error("Error fetching offers:", error);
+  }
+}
+
 
 interface Price {
   currency: string;
