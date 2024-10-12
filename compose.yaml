@@ -8,6 +8,14 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
+  mongodb:
+    image: mongo:latest
+    restart: unless-stopped
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - my_network
 
 volumes:
   redis_data:
+  mongodb_data:
