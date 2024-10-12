@@ -55,8 +55,8 @@ export async function getCollectionDetails(slug: string) {
     };
 
     return collectionCache[slug];
-  } catch (error) {
-    console.log('🌵💜🐢 error', error);
+  } catch (error: any) {
+    console.log('🌵💜🐢 error', error.response.data);
     throw error;
   }
 }

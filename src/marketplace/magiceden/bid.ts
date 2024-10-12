@@ -3,8 +3,11 @@ import { axiosInstance, limiter } from "../../init";
 import { MAGICEDEN_CONTRACT_ADDRESS, WETH_CONTRACT_ADDRESS, WETH_MIN_ABI } from "../../constants";
 import { config } from "dotenv";
 import { ensureAllowance } from "../../functions";
-import { MAGENTA, RESET } from "../..";
+import { MAGENTA } from "../..";
 import redisClient from "../../utils/redis";
+import { getWethBalance } from "../../utils/balance";
+const RED = '\x1b[31m';
+const RESET = '\x1b[0m';
 
 config()
 
@@ -43,6 +46,16 @@ export async function bidOnMagiceden(
   const wallet = new Wallet(privateKey, provider);
   const wethContract = new Contract(WETH_CONTRACT_ADDRESS,
     WETH_MIN_ABI, wallet);
+
+  const offerPriceEth = Number(weiPrice) / 1e18
+  const wethBalance = await getWethBalance(maker)
+
+  if (offerPriceEth > wethBalance) {
+    console.log(RED + '-----------------------------------------------------------------------------------------------------------' + RESET);
+    console.log(RED + `Offer price: ${offerPriceEth} WETH  is greater than available WETH balance: ${wethBalance} WETH. SKIPPING ...`.toUpperCase() + RESET);
+    console.log(RED + '-----------------------------------------------------------------------------------------------------------' + RESET);
+    return
+  }
 
   const offerPrice = BigNumber.from(weiPrice);
   await ensureAllowance(wethContract, wallet.address, offerPrice, MAGICEDEN_CONTRACT_ADDRESS);

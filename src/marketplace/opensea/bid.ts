@@ -1,17 +1,29 @@
 import { BigNumber, Contract, ethers, Wallet } from "ethers";
-import { SEAPORT_CONTRACT_ADDRESS, SEAPORT_MIN_ABI, WETH_CONTRACT_ADDRESS, WETH_MIN_ABI } from "../../constants";
+import { SEAPORT_CONTRACT_ADDRESS, SEAPORT_MIN_ABI, WETH_MIN_ABI } from "../../constants";
 import { axiosInstance, limiter } from "../../init";
 import { ensureAllowance } from "../../functions";
-import { BLUE, RESET } from "../..";
+import { BLUE } from "../..";
 import redisClient from "../../utils/redis";
 import { config } from "dotenv";
+import { getWethBalance } from "../../utils/balance";
+
 config()
 
 const API_KEY = process.env.API_KEY as string;
+const OPENSEA_ITEM_ZONE = "0x000056f7000000ece9003ca63978907a00ffd100"
+const OPENSEA_COLLECTION_ZONE = "0x004C00500000aD104D7DBd00e3ae0A5C00560C00"
+const ZONE_HASH = "0x0000000000000000000000000000000000000000000000000000000000000000"
+const CONDUIT_KEY = "0x0000007b02230091a7ed01230072f7006a004d60a8d4e71d599b8104250f0000"
+const SEAPORT_1_6 = "0x0000000000000068f116a894984e2db1123eb395"
+const WETH_CONTRACT_ADDRESS = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+const OPENSEA_FEE_ADDRESS = "0x0000a26b00c1F0DF003000390027140000fAa719"
 
 const ALCHEMY_API_KEY = "HGWgCONolXMB2op5UjPH1YreDCwmSbvx"
 const provider = new ethers.providers.AlchemyProvider('mainnet', ALCHEMY_API_KEY);
 const SEAPORT_CONTRACT = new ethers.Contract(SEAPORT_CONTRACT_ADDRESS, SEAPORT_MIN_ABI, provider);
+const RED = '\x1b[31m';
+const RESET = '\x1b[0m';
+
 
 const redis = redisClient.getClient();
 
@@ -19,7 +31,7 @@ const domain = {
   name: 'Seaport',
   version: '1.6',
   chainId: '1',
-  verifyingContract: '0x0000000000000068f116a894984e2db1123eb395'
+  verifyingContract: SEAPORT_1_6
 };
 
 const types = {
@@ -148,12 +160,11 @@ async function buildItemOffer(offerSpecification: ItemOfferSpecification) {
       consideration,
       startTime,
       endTime,
-      orderType: 0,
-      zone: "0x0000000000000000000000000000000000000000",
-      zoneHash:
-        "0x0000000000000000000000000000000000000000000000000000000000000000",
+      orderType: 2,
+      zone: OPENSEA_ITEM_ZONE,
+      zoneHash: ZONE_HASH,
       salt: getSalt(),
-      conduitKey: "0x0000007b02230091a7ed01230072f7006a004d60a8d4e71d599b8104250f0000",
+      conduitKey: CONDUIT_KEY,
       totalOriginalConsiderationItems: consideration.length.toString(),
       counter: 0,
     }
@@ -185,9 +196,20 @@ export async function bidOnOpensea(
   opensea_traits?: string,
   asset?: { contractAddress: string, tokenId: number }
 ) {
-  const divider = BigNumber.from(1000000);
-  const roundedNumber = Math.round(Number(offer_price) / 1e12) * 1e12;
+  const divider = BigNumber.from(10000);
+  const roundedNumber = Math.round(Number(offer_price) / 1e14) * 1e14;
   const offerPrice = BigNumber.from(roundedNumber.toString());
+
+  const offerPriceEth = Number(offer_price) / 1e18
+  const wethBalance = await getWethBalance(wallet_address)
+
+  if (offerPriceEth > wethBalance) {
+    console.log(RED + '-----------------------------------------------------------------------------------------------------------' + RESET);
+    console.log(RED + `Offer price: ${offerPriceEth} WETH  is greater than available WETH balance: ${wethBalance} WETH. SKIPPING ...`.toUpperCase() + RESET);
+    console.log(RED + '-----------------------------------------------------------------------------------------------------------' + RESET);
+    return
+  }
+
   const wallet = new Wallet(private_key, provider);
   const openseaFee = BigNumber.from(250);
 
@@ -204,11 +226,11 @@ export async function bidOnOpensea(
 
     const opensea_consideration = {
       itemType: 1,
-      token: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2',
+      token: WETH_CONTRACT_ADDRESS,
       identifierOrCriteria: "0",
       startAmount: +offerPrice.mul(openseaFee).div(divider),
       endAmount: +offerPrice.mul(openseaFee).div(divider),
-      recipient: '0x0000a26b00c1F0DF003000390027140000fAa719'
+      recipient: OPENSEA_FEE_ADDRESS
     };
 
     if (!offer) {
@@ -223,7 +245,7 @@ export async function bidOnOpensea(
       if (enforceCreatorFee) {
         const consideration_item = {
           itemType: 1,
-          token: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2',
+          token: WETH_CONTRACT_ADDRESS,
           identifierOrCriteria: "0",
           startAmount: Number(offerPrice.mul(fee).div(divider)),
           endAmount: Number(offerPrice.mul(fee).div(divider)),
@@ -236,10 +258,7 @@ export async function bidOnOpensea(
 
     const itemSignature = await signOffer(wallet, offer)
     const itemResponse = await postItemOffer(offer, itemSignature)
-
     const itemOrderHash = itemResponse?.order?.order_hash
-
-
     const key = `opensea:order:${slug}:${asset.tokenId}`;
     await redis.setex(key, expiry, itemOrderHash);
     const successMessage = `🎉 TOKEN OFFER POSTED TO OPENSEA SUCCESSFULLY FOR: ${slug.toUpperCase()}  TOKEN: ${asset.tokenId} 🎉`
@@ -262,7 +281,7 @@ export async function bidOnOpensea(
           offer: [
             {
               itemType: 1,
-              token: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2',
+              token: WETH_CONTRACT_ADDRESS,
               identifierOrCriteria: 0,
               startAmount: (Date.now() / 1000).toString(),
               endAmount: (Date.now() / 1000 + 100000).toString()
@@ -272,17 +291,15 @@ export async function bidOnOpensea(
           startTime: '1666480886',
           endTime: '1666680886',
           orderType: 2,
-          zone: '0x004C00500000aD104D7DBd00e3ae0A5C00560C00',
-          zoneHash:
-            '0x0000000000000000000000000000000000000000000000000000000000000000',
-          conduitKey:
-            '0x0000007b02230091a7ed01230072f7006a004d60a8d4e71d599b8104250f0000',
+          zone: OPENSEA_COLLECTION_ZONE,
+          zoneHash: ZONE_HASH,
+          conduitKey: CONDUIT_KEY,
           totalOriginalConsiderationItems: 2,
           counter: '0'
         },
         signature: '0x0'
       },
-      protocol_address: '0x0000000000000068f116a894984e2db1123eb395'
+      protocol_address: SEAPORT_1_6
     }
 
     const wethContract = new Contract(WETH_CONTRACT_ADDRESS, WETH_MIN_ABI, wallet);
@@ -307,7 +324,7 @@ export async function bidOnOpensea(
       quantity: 1,
       criteria: payload.criteria,
       offerer: wallet_address,
-      protocol_address: '0x0000000000000068f116a894984e2db1123eb395'
+      protocol_address: SEAPORT_1_6
     };
 
     try {
@@ -317,17 +334,17 @@ export async function bidOnOpensea(
       payload.protocol_data.parameters.endTime = BigInt(Math.floor(Date.now() / 1000 + expiry)).toString();
       payload.protocol_data.parameters.offerer = wallet_address;
       payload.protocol_data.parameters.offer[0].startAmount = offerPrice.toString();
-      payload.protocol_data.parameters.offer[0].token = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2';
+      payload.protocol_data.parameters.offer[0].token = WETH_CONTRACT_ADDRESS;
       payload.protocol_data.parameters.offer[0].endAmount = offerPrice.toString();
       payload.protocol_data.parameters.consideration.push(data.partialParameters.consideration[0]);
 
       const opensea_consideration = {
         itemType: 1,
-        token: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2',
+        token: WETH_CONTRACT_ADDRESS,
         identifierOrCriteria: 0,
         startAmount: offerPrice.mul(openseaFee).div(divider).toString(),
         endAmount: offerPrice.mul(openseaFee).div(divider).toString(),
-        recipient: '0x0000a26b00c1F0DF003000390027140000fAa719'
+        recipient: OPENSEA_FEE_ADDRESS
       };
       payload.protocol_data.parameters.consideration.push(opensea_consideration);
 
@@ -337,7 +354,7 @@ export async function bidOnOpensea(
         if (enforceCreatorFee) {
           const consideration_item = {
             itemType: 1,
-            token: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2',
+            token: WETH_CONTRACT_ADDRESS,
             identifierOrCriteria: 0,
             startAmount: offerPrice.mul(fee).div(divider).toString(),
             endAmount: offerPrice.mul(fee).div(divider).toString(),
@@ -364,7 +381,7 @@ export async function bidOnOpensea(
       );
 
       payload.protocol_data.signature = signObj;
-      payload.protocol_address = '0x0000000000000068f116a894984e2db1123eb395';
+      payload.protocol_address = SEAPORT_1_6;
 
       await submitOfferToOpensea(payload, expiry, opensea_traits)
     } catch (error: any) {
@@ -405,7 +422,7 @@ async function submitOfferToOpensea(payload: IPayload, expiry = 900, opensea_tra
       : `🎉 COLLECTION OFFER POSTED TO OPENSEA SUCCESSFULLY FOR: ${payload.criteria.collection.slug.toUpperCase()} 🎉`
     console.log(BLUE, successMessage, RESET);
   } catch (error: any) {
-    console.log("opensea post offer error", error.response.data);
+    console.log("opensea post offer error", error?.response?.data || error);
 
   }
 }
@@ -499,7 +516,7 @@ const getOffer = (priceWei: bigint) => {
   return [
     {
       itemType: 1, // ERC 20
-      token: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+      token: WETH_CONTRACT_ADDRESS,
       identifierOrCriteria: 0,
       startAmount: priceWei.toString(),
       endAmount: priceWei.toString(),
@@ -564,8 +581,10 @@ const getItemTokenConsideration = async (
 }
 
 export async function fetchOpenseaOffers(
+  address: string,
   offerType: 'COLLECTION' | 'TRAIT' | 'TOKEN',
   collectionSlug: string,
+  contractAddress: string,
   identifiers: Record<string, string> | string
 ) {
   try {
@@ -576,26 +595,32 @@ export async function fetchOpenseaOffers(
           'accept': 'application/json',
           'X-NFT-API-Key': API_KEY
         }
-      }))
-      const offers = data.offers.sort((a: any, b: any) => +b.price.value - +a.price.value)[0].price.value
-      return offers
+      }));
+
+      const filteredOffers = data.offers
+        .filter((offer: any) => offer.protocol_data.parameters.offerer !== address.toLowerCase())
+        .sort((a: any, b: any) => +b.price.value - +a.price.value);
+
+      const bestOffer = filteredOffers[0];
+      const offers = bestOffer.price.value;
+
+      const quantity = bestOffer.protocol_data.parameters.consideration.find((item: any) => item.token.toLowerCase() === contractAddress.toLowerCase()).startAmount;
+
+      return Number(offers) / Number(quantity);
     } else if (offerType === 'TRAIT') {
-      const trait = identifiers as Record<string, string>;
+      const { type, value } = identifiers as Record<string, string>;
       const url = `https://api.nfttools.website/opensea/api/v2/offers/collection/${collectionSlug}/traits`;
-      const queryParams = {
-        type: trait.type,
-        value: trait.value
-      };
       const { data } = await limiter.schedule(() => axiosInstance.get(url, {
         headers: {
           'accept': 'application/json',
           'X-NFT-API-Key': API_KEY
         },
-        params: queryParams
-      }))
+        params: { type, value }
+      }));
 
-      const offers = data?.offers?.sort((a: any, b: any) => +b.price.value - +a.price.value)[0].price.value || 0
-      return offers
+      const offers = data.offers?.filter((offer: any) => offer.protocol_data.parameters.offerer.toLowerCase() !== address.toLowerCase())
+        .sort((a: any, b: any) => +b.price.value - +a.price.value)[0]?.price?.value || 0;
+      return offers;
     } else if (offerType === 'TOKEN') {
       const token = identifiers as string;
       const url = `https://api.nfttools.website/opensea/api/v2/offers/collection/${collectionSlug}/nfts/${token}/best`;
@@ -605,12 +630,14 @@ export async function fetchOpenseaOffers(
           'X-NFT-API-Key': API_KEY
         }
       }))
-      return data.price.value;
+
+      const quantity = data?.protocol_data?.parameters?.consideration?.find((item: any) => item.token.toLowerCase() === contractAddress.toLowerCase()).startAmount ?? 1
+      return Number(data.price.value) / Number(quantity);
     } else {
       throw new Error("Invalid offer type");
     }
-  } catch (error) {
-    console.error("Error fetching offers:", error);
+  } catch (error: any) {
+    console.error(RED + "Error fetching offers:", error?.response?.data?.message?.errors[0] || JSON.stringify(error.response.data.message) + RESET);
   }
 }
 

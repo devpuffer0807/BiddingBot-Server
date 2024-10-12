@@ -274,8 +274,6 @@ export async function fetchBlurBid(collection: string, criteriaType: 'TRAIT' | '
       }
     }));
 
-    console.log({ data: JSON.stringify(data), criteriaValue });
-
     return data;
   } catch (error: any) {
     console.error("Error fetching executable bids:", error.response?.data || error.message);
