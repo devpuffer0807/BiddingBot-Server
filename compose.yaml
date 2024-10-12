@@ -13,9 +13,6 @@ services:
     restart: unless-stopped
     volumes:
       - mongodb_data:/data/db
-    networks:
-      - my_network
-
 volumes:
   redis_data:
   mongodb_data:
