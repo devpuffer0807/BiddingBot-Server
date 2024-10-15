@@ -3,6 +3,9 @@ import { axiosInstance, limiter } from "../../init";
 import redisClient from "../../utils/redis";
 import { RESET } from "../..";
 import { config } from "dotenv";
+import { getBethBalance } from "../../utils/balance";
+const RED = '\x1b[31m';
+
 
 config()
 
@@ -30,6 +33,18 @@ export async function bidOnBlur(
   expiry = 900,
   traits?: string
 ) {
+
+  const bethBalance = await getBethBalance(wallet_address)
+  const offerPriceEth = Number(offer_price) / 1e18
+
+  if (offerPriceEth > bethBalance) {
+    console.log(RED + '-----------------------------------------------------------------------------------------------------------' + RESET);
+    console.log(RED + `Offer price: ${offerPriceEth} BETH  is greater than available WETH balance: ${bethBalance} BETH. SKIPPING ...`.toUpperCase() + RESET);
+    console.log(RED + '-----------------------------------------------------------------------------------------------------------' + RESET);
+    return
+  }
+
+
   const offerPrice = BigNumber.from(offer_price.toString());
   const accessToken = await getAccessToken(BLUR_API_URL, private_key);
 
@@ -279,6 +294,25 @@ export async function fetchBlurBid(collection: string, criteriaType: 'TRAIT' | '
     console.error("Error fetching executable bids:", error.response?.data || error.message);
   }
 }
+
+
+
+export async function fetchBlurCollectionStats(slug: string) {
+  const URL = `https://api.nfttools.website/blur/v1/collections/${slug}`;
+  try {
+    const { data } = await limiter.schedule(() => axiosInstance.get(URL, {
+      headers: {
+        'content-type': 'application/json',
+        'X-NFT-API-Key': API_KEY,
+      }
+    }));
+    return data?.collection?.floorPrice?.amount || 0
+  } catch (error: any) {
+    console.error("Error fetching collection data:", error.response?.data || error.message);
+    return 0
+  }
+}
+
 
 interface PriceLevel {
   criteriaType: string;

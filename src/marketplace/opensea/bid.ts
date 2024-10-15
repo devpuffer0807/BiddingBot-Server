@@ -305,7 +305,7 @@ export async function bidOnOpensea(
     const wethContract = new Contract(WETH_CONTRACT_ADDRESS, WETH_MIN_ABI, wallet);
     const OPENSEA_CONDUIT = "0x1e0049783f008a0085193e00003d00cd54003c71"
 
-    await ensureAllowance(wethContract, wallet.address, offerPrice, OPENSEA_CONDUIT);
+    // await ensureAllowance(wethContract, wallet.address, offerPrice, OPENSEA_CONDUIT);
 
     // reset consideration list and count
     payload.protocol_data.parameters.consideration = [];
