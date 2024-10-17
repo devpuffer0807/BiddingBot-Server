@@ -55,6 +55,6 @@ jobs:
       - name: Validate .env contents
         run: cat .env
 
-      - name: change directory
-        run: cd /home/leo/runners/nfttools-websocket/_work/nfttools-websocket/nfttools-websocket
-      - run: pm2 restart nfttools-websocket
+      # - name: change directory
+      # run: cd /home/leo/runners/nfttools-websocket/_work/nfttools-websocket/nfttools-websocket
+      # - run: pm2 restart nfttools-websocket

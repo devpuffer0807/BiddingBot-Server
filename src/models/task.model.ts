@@ -1,5 +1,12 @@
 import mongoose, { Schema, Document } from "mongoose";
 
+interface SelectedTraits {
+  [key: string]: {
+    name: string;
+    availableInMarketplaces: string[];
+  }[];
+}
+
 export interface ITask extends Document {
   _id: mongoose.Types.ObjectId;
   user: mongoose.Types.ObjectId;
@@ -14,12 +21,7 @@ export interface ITask extends Document {
   selectedMarketplaces: string[];
   running: boolean;
   tags: { name: string; color: string }[];
-  selectedTraits: {
-    [key: string]: {
-      name: string;
-      availableInMarketplaces: string[];
-    }[];
-  };
+  selectedTraits: SelectedTraits;
   traits: {
     categories: Record<string, string>;
     counts: Record<
@@ -75,7 +77,7 @@ export interface ITask extends Document {
   };
   loopInterval: {
     value: number;
-  unit: string;
+    unit: string;
   };
   tokenIds: number[];
   bidType: "collection" | "token";
@@ -100,10 +102,7 @@ const TaskSchema: Schema = new Schema(
     running: { type: Boolean, default: false },
     tags: [{ name: String, color: String }],
     selectedTraits: {
-      type: [{
-        name: { type: String, required: true },
-        availableInMarketplaces: { type: [String], required: true },
-      }],
+      type: Schema.Types.Mixed,
     },
     traits: {
       categories: { type: Schema.Types.Mixed },
@@ -164,8 +163,16 @@ const TaskSchema: Schema = new Schema(
       unit: { type: String, required: false, default: "minutes" }
     },
     tokenIds: { type: [Number], default: [] },
-    bidType: { type: String, enum: ["collection", "token"], default: "collection" },
-    bidPriceType: { type: String, enum: ["GENERAL_BID_PRICE", "MARKETPLACE_BID_PRICE"], default: "general" },
+    bidType: {
+      type: String,
+      enum: ["collection", "token"],
+      default: "collection"
+    },
+    bidPriceType: {
+      type: String,
+      enum: ["GENERAL_BID_PRICE", "MARKETPLACE_BID_PRICE"],
+      default: "GENERAL_BID_PRICE"
+    },
     slugValid: { type: Boolean, default: null },
     magicEdenValid: { type: Boolean, default: null },
     blurValid: { type: Boolean, default: null },
