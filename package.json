@@ -8,7 +8,8 @@
 		"start": "node dist/index.js",
 		"dev": "nodemon src/index.ts",
 		"ci": "npm install --frozen-lockfile",
-		"dc:up": "docker compose up -d"
+		"dc:up": "docker compose up -d",
+		"test": "nodemon test.ts"
 	},
 	"keywords": [],
 	"author": "",

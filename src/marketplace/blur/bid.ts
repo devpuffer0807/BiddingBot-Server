@@ -35,7 +35,7 @@ export async function bidOnBlur(
 ) {
 
   const bethBalance = await getBethBalance(wallet_address)
-  const offerPriceEth = Number(offer_price) / 1e18
+  let offerPriceEth: string | number = (Number(offer_price) / 1e18)
 
   if (offerPriceEth > bethBalance) {
     console.log(RED + '-----------------------------------------------------------------------------------------------------------' + RESET);
@@ -44,16 +44,15 @@ export async function bidOnBlur(
     return
   }
 
-
   const offerPrice = BigNumber.from(offer_price.toString());
   const accessToken = await getAccessToken(BLUR_API_URL, private_key);
 
+  offerPriceEth = (Math.floor(Number(utils.formatUnits(offerPrice)) * 100) / 100).toFixed(2);
   const wallet = new Wallet(private_key, provider);
-
   const basePayload = {
     price: {
       unit: 'BETH',
-      amount: utils.formatUnits(offerPrice),
+      amount: offerPriceEth,
     },
     quantity: 1,
     expirationTime: new Date(Date.now() + (expiry * 1000)).toISOString(),
@@ -107,7 +106,7 @@ export async function bidOnBlur(
       contractAddress,
       criteriaPrices: [
         {
-          price: utils.formatUnits(offerPrice),
+          price: offerPriceEth,
           criteria: {
             "type": traits ? "TRAIT" : "COLLECTION",
             value: traits ? JSON.parse(traits) : {}
@@ -353,11 +352,6 @@ interface Criteria {
 interface CriteriaPrice {
   price: string;
   criteria: Criteria;
-}
-
-interface ICancelPayload {
-  contractAddress: string;
-  criteriaPrices: CriteriaPrice[];
 }
 
 interface BlurBidResponse {

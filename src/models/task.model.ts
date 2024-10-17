@@ -14,10 +14,18 @@ export interface ITask extends Document {
   selectedMarketplaces: string[];
   running: boolean;
   tags: { name: string; color: string }[];
-  selectedTraits: Record<string, string[]>;
+  selectedTraits: {
+    [key: string]: {
+      name: string;
+      availableInMarketplaces: string[];
+    }[];
+  };
   traits: {
     categories: Record<string, string>;
-    counts: Record<string, Record<string, number>>;
+    counts: Record<
+      string,
+      Record<string, { count: number; availableInMarketplaces: string[] }>
+    >;
   };
   outbidOptions: {
     outbid: boolean;
@@ -67,11 +75,14 @@ export interface ITask extends Document {
   };
   loopInterval: {
     value: number;
-    unit: string;
+  unit: string;
   };
   tokenIds: number[];
   bidType: "collection" | "token";
   bidPriceType: "GENERAL_BID_PRICE" | "MARKETPLACE_BID_PRICE";
+  slugValid: boolean;
+  magicEdenValid: boolean;
+  blurValid: boolean;
 }
 
 const TaskSchema: Schema = new Schema(
@@ -88,10 +99,18 @@ const TaskSchema: Schema = new Schema(
     selectedMarketplaces: { type: [String], required: true },
     running: { type: Boolean, default: false },
     tags: [{ name: String, color: String }],
-    selectedTraits: { type: Schema.Types.Mixed },
+    selectedTraits: {
+      type: [{
+        name: { type: String, required: true },
+        availableInMarketplaces: { type: [String], required: true },
+      }],
+    },
     traits: {
       categories: { type: Schema.Types.Mixed },
-      counts: { type: Schema.Types.Mixed },
+      counts: {
+        type: Schema.Types.Mixed,
+        required: true,
+      },
     },
     outbidOptions: {
       outbid: { type: Boolean, default: false },
@@ -147,7 +166,9 @@ const TaskSchema: Schema = new Schema(
     tokenIds: { type: [Number], default: [] },
     bidType: { type: String, enum: ["collection", "token"], default: "collection" },
     bidPriceType: { type: String, enum: ["GENERAL_BID_PRICE", "MARKETPLACE_BID_PRICE"], default: "general" },
-
+    slugValid: { type: Boolean, default: null },
+    magicEdenValid: { type: Boolean, default: null },
+    blurValid: { type: Boolean, default: null },
   },
   { timestamps: true }
 );

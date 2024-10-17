@@ -1,7 +1,6 @@
 import { BigNumber, Contract, ethers, Wallet } from "ethers";
 import { SEAPORT_CONTRACT_ADDRESS, SEAPORT_MIN_ABI, WETH_MIN_ABI } from "../../constants";
 import { axiosInstance, limiter } from "../../init";
-import { ensureAllowance } from "../../functions";
 import { BLUE } from "../..";
 import redisClient from "../../utils/redis";
 import { config } from "dotenv";
@@ -17,13 +16,11 @@ const CONDUIT_KEY = "0x0000007b02230091a7ed01230072f7006a004d60a8d4e71d599b81042
 const SEAPORT_1_6 = "0x0000000000000068f116a894984e2db1123eb395"
 const WETH_CONTRACT_ADDRESS = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
 const OPENSEA_FEE_ADDRESS = "0x0000a26b00c1F0DF003000390027140000fAa719"
-
 const ALCHEMY_API_KEY = "HGWgCONolXMB2op5UjPH1YreDCwmSbvx"
 const provider = new ethers.providers.AlchemyProvider('mainnet', ALCHEMY_API_KEY);
 const SEAPORT_CONTRACT = new ethers.Contract(SEAPORT_CONTRACT_ADDRESS, SEAPORT_MIN_ABI, provider);
 const RED = '\x1b[31m';
 const RESET = '\x1b[0m';
-
 
 const redis = redisClient.getClient();
 
@@ -212,7 +209,6 @@ export async function bidOnOpensea(
 
   const wallet = new Wallet(private_key, provider);
   const openseaFee = BigNumber.from(250);
-
 
   if (asset) {
     const offer = await buildItemOffer({
@@ -473,6 +469,7 @@ export async function cancelOrder(orderHash: string, protocolAddress: string, pr
 
   try {
     const response = await axiosInstance.post(url, body, { headers });
+    console.log(JSON.stringify(response.data));
     return response.data;
   } catch (error: any) {
     console.error("Error sending the cancel order request: ", error.response ? error.response.data : error.message);

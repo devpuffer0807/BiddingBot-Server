@@ -40,7 +40,6 @@ export async function bidOnMagiceden(
   trait?: Trait,
   tokenId?: string | number
 ) {
-
   const expiry = Math.ceil(Number(expirationTime) - (Date.now() / 1000))
   const wallet = new Wallet(privateKey, provider);
   const offerPriceEth = Number(weiPrice) / 1e18
@@ -325,9 +324,6 @@ export async function submitSignedOrderData(order: CreateBidData, wallet: ethers
 
 export async function canelMagicEdenBid(orderIds: string[], privateKey: string) {
   try {
-
-    console.log({ orderIds });
-
     const { data } = await limiter.schedule(() => axiosInstance.post<MagicEdenCancelOfferCancel>('https://api.nfttools.website/magiceden/v3/rtp/ethereum/execute/cancel/v3', { orderIds }, {
       headers: {
         'content-type': 'application/json',
