@@ -468,8 +468,8 @@ export async function cancelOrder(orderHash: string, protocolAddress: string, pr
   };
 
   try {
-    const response = await axiosInstance.post(url, body, { headers });
-    console.log(JSON.stringify(response.data));
+    const response = await limiter.schedule(() => axiosInstance.post(url, body, { headers }))
+    console.log(JSON.stringify({ cancelled: true }));
     return response.data;
   } catch (error: any) {
     console.error("Error sending the cancel order request: ", error.response ? error.response.data : error.message);

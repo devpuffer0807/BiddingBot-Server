@@ -1,5 +1,4 @@
 import { config } from "dotenv";
-import axios from "axios";
 import { axiosInstance, limiter } from "../init"; // Import Redis client
 import redisClient from "../utils/redis";
 
@@ -69,7 +68,7 @@ export async function getCollectionStats(collectionSlug: string) {
   }
 
   try {
-    const { data } = await limiter.schedule(() => axios.get<CollectionStats>(`https://api.nfttools.website/opensea/api/v2/collections/${collectionSlug}/stats`, {
+    const { data } = await limiter.schedule(() => axiosInstance.get<CollectionStats>(`https://api.nfttools.website/opensea/api/v2/collections/${collectionSlug}/stats`, {
       headers: { 'X-NFT-API-Key': API_KEY }
     }));
 
@@ -91,7 +90,7 @@ export async function getCollectionEvents(
     eventTypes.forEach(type => params.append('event_type', type));
     params.append('limit', limit.toString());
 
-    const { data } = await limiter.schedule(() => axios.get<CollectionEventResponse>(`https://api.nfttools.website/opensea/api/v2/events/collection/${collectionSlug}`, {
+    const { data } = await limiter.schedule(() => axiosInstance.get<CollectionEventResponse>(`https://api.nfttools.website/opensea/api/v2/events/collection/${collectionSlug}`, {
       params: params,
       headers: { 'X-NFT-API-Key': API_KEY }
     }))

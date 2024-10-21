@@ -48,6 +48,15 @@ export async function bidOnBlur(
   const accessToken = await getAccessToken(BLUR_API_URL, private_key);
 
   offerPriceEth = (Math.floor(Number(utils.formatUnits(offerPrice)) * 100) / 100).toFixed(2);
+
+
+  if (Number(offerPriceEth) === 0) {
+    console.log(RED + '-----------------------------------------------------------------------------------------------------------' + RESET);
+    console.log(RED + `Offer price is less than the minimum Blur offer price. SKIPPING ...`.toUpperCase() + RESET);
+    console.log(RED + '-----------------------------------------------------------------------------------------------------------' + RESET);
+    return
+  }
+
   const wallet = new Wallet(private_key, provider);
   const basePayload = {
     price: {

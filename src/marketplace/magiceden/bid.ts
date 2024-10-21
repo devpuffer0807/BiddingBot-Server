@@ -1,11 +1,10 @@
-import { BigNumber, Contract, ethers, Wallet } from "ethers";
+import { ethers, Wallet } from "ethers";
 import { axiosInstance, limiter } from "../../init";
-import { MAGICEDEN_CONTRACT_ADDRESS, WETH_CONTRACT_ADDRESS, WETH_MIN_ABI } from "../../constants";
 import { config } from "dotenv";
-import { ensureAllowance } from "../../functions";
 import { MAGENTA } from "../..";
 import redisClient from "../../utils/redis";
 import { getWethBalance } from "../../utils/balance";
+
 const RED = '\x1b[31m';
 const RESET = '\x1b[0m';
 
