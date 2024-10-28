@@ -9,7 +9,8 @@
 		"dev": "nodemon src/index.ts",
 		"ci": "npm install --frozen-lockfile",
 		"dc:up": "docker compose up -d",
-		"test": "nodemon test.ts"
+		"test": "nodemon test.ts",
+		"bench": "nodemon bench.js"
 	},
 	"keywords": [],
 	"author": "",
@@ -30,6 +31,7 @@
 		"body-parser": "^1.20.2",
 		"bottleneck": "^2.19.5",
 		"bullmq": "^5.13.0",
+		"colors": "^1.4.0",
 		"cors": "^2.8.5",
 		"dotenv": "^16.4.5",
 		"ethers": "^5.7.2",

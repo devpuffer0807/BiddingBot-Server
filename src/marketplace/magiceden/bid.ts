@@ -29,6 +29,7 @@ const redis = redisClient.getClient();
  */
 
 export async function bidOnMagiceden(
+  bidCount: number,
   maker: string,
   collection: string,
   quantity: number,
@@ -55,9 +56,9 @@ export async function bidOnMagiceden(
 
   if (order) {
     const res = await tokenId ?
-      submitSignedOrderData(order, wallet, slug, expiry, undefined, tokenId)
-      : trait ? submitSignedOrderData(order, wallet, slug, expiry, trait, undefined)
-        : submitSignedOrderData(order, wallet, slug, expiry, undefined, undefined)
+      submitSignedOrderData(bidCount, order, wallet, slug, expiry, undefined, tokenId)
+      : trait ? submitSignedOrderData(bidCount, order, wallet, slug, expiry, trait, undefined)
+        : submitSignedOrderData(bidCount, order, wallet, slug, expiry, undefined, undefined)
     return res
   }
   return order
@@ -199,7 +200,7 @@ async function signOrderData(wallet: ethers.Wallet, signData: any, trait?: Trait
 * @param trait - Collection trait
  * @returns The response from the API.
  */
-async function sendSignedOrderData(signature: string, data: SignedData, slug: string, expiry: number = 900, trait?: Trait, tokenId?: number | string) {
+async function sendSignedOrderData(bidCount: number, signature: string, data: SignedData, slug: string, expiry: number = 900, trait?: Trait, tokenId?: number | string) {
 
   const endpoint = trait || tokenId
     ? "https://api.nfttools.website/magiceden/v3/rtp/ethereum/order/v3"
@@ -231,9 +232,13 @@ async function sendSignedOrderData(signature: string, data: SignedData, slug: st
           ? `${JSON.stringify(trait)}`
           : "default"
 
-    const key = `magiceden:order:${slug}:${orderKey}`;
-    const order = JSON.stringify(offerResponse)
+    const baseKey = `magiceden:order:${slug}:${orderKey}`;
+    const order = JSON.stringify(offerResponse);
+
+    const key = `${bidCount}:${baseKey}`;
     await redis.setex(key, expiry, order);
+
+
     console.log(MAGENTA, successMessage, RESET);
     return offerResponse;
   } catch (error: any) {
@@ -249,7 +254,7 @@ async function sendSignedOrderData(signature: string, data: SignedData, slug: st
  * @param slug - Collection slug
 
  */
-export async function submitSignedOrderData(order: CreateBidData, wallet: ethers.Wallet, slug: string, expiry = 900, trait?: Trait, tokenId?: number | string) {
+export async function submitSignedOrderData(bidCount: number, order: CreateBidData, wallet: ethers.Wallet, slug: string, expiry = 900, trait?: Trait, tokenId?: number | string) {
   const signData = order?.steps
     ?.find((step) => step.id === "order-signature")
     ?.items?.[0]?.data?.sign;
@@ -314,7 +319,7 @@ export async function submitSignedOrderData(order: CreateBidData, wallet: ethers
         console.error('Sign data not found in order steps.');
       }
     }
-    return await sendSignedOrderData(signature, data, slug, expiry, trait, tokenId);
+    return await sendSignedOrderData(bidCount, signature, data, slug, expiry, trait, tokenId);
   } catch (error: any) {
     console.error('Error in submitSignedOrderData:', error);
   }
@@ -442,18 +447,13 @@ export async function fetchMagicEdenOffer(type: "COLLECTION" | "TRAIT" | "TOKEN"
 }
 
 
-// https://api-mainnet.magiceden.io/v3/rtp/ethereum/collections/0x031920cc2d9f5c10b444fd44009cd64f829e7be2/attributes/all/v4
-
-// https://stats-mainnet.magiceden.io/collection_stats/stats?chain=ethereum&collectionId=0x031920cc2d9f5c10b444fd44009cd64f829e7be2
-
 export async function fetchMagicEdenCollectionStats(contractAddress: string) {
   const queryParams = {
     chain: 'ethereum',
     collectionId: contractAddress
   };
   try {
-    const API_KEY = "a4eae399-f135-4627-829a-18435bb631ae"
-    const { data } = await limiter.schedule(() => axiosInstance.get('https://nfttools.pro/magiceden_stats/collection_stats/stats', {
+    const { data } = await limiter.schedule(() => axiosInstance.get('https://api.nfttools.website/magiceden_stats/collection_stats/stats', {
       params: queryParams,
       headers: {
         'X-NFT-API-Key': API_KEY
@@ -465,6 +465,147 @@ export async function fetchMagicEdenCollectionStats(contractAddress: string) {
     return 0
   }
 }
+
+export async function fetchMagicEdenTokens(collectionId: string, limit: number = 50) {
+  const params: any = {
+    excludeSpam: true,
+    excludeBurnt: true,
+    collection: collectionId,
+    sortBy: "floorAskPrice",
+    sortDirection: "asc",
+    limit: 50, // Set limit to 50 for each request
+    excludeSources: ["nftx.io", "sudoswap.xyz"],
+    normalizeRoyalties: false,
+    continuation: null
+  };
+  const url = `https://api.nfttools.website/magiceden/v3/rtp/ethereum/tokens/v7`;
+  const allTokens: number[] = [];
+  try {
+    let totalFetched = 0;
+
+    do {
+      const { data } = await limiter.schedule(() => axiosInstance.get<TokenResponseMagiceden>(url, {
+        headers: {
+          accept: "application/json",
+          "X-NFT-API-Key": API_KEY,
+        },
+        params
+      }))
+
+      const tokens = data.tokens.map((item) => +item.token.tokenId);
+      allTokens.push(...tokens);
+      totalFetched += tokens.length;
+      params.continuation = data.continuation;
+
+    } while (params.continuation && totalFetched < limit);
+    return allTokens.slice(0, limit);
+  } catch (error) {
+    console.error("Error fetching Magic Eden tokens:", error);
+    return []
+  }
+}
+
+
+interface TokenMagiceden {
+  chainId: number;
+  contract: string;
+  tokenId: string;
+  name: string;
+  description: string;
+  image: string;
+  imageSmall: string;
+  imageLarge: string;
+  metadata: {
+    imageOriginal: string;
+    imageMimeType: string;
+    tokenURI: string;
+  };
+  media: any; // Adjust type if you know the structure of media
+  kind: string;
+  isFlagged: boolean;
+  isSpam: boolean;
+  isNsfw: boolean;
+  metadataDisabled: boolean;
+  lastFlagUpdate: string;
+  lastFlagChange: string;
+  supply: string;
+  remainingSupply: string;
+  rarity: number;
+  rarityRank: number;
+  collection: {
+    id: string;
+    name: string;
+    image: string;
+    slug: string;
+    symbol: string;
+    creator: string;
+    tokenCount: number;
+    metadataDisabled: boolean;
+    floorAskPrice: {
+      currency: {
+        contract: string;
+        name: string;
+        symbol: string;
+        decimals: number;
+      };
+      amount: {
+        raw: string;
+        decimal: number;
+        usd: number;
+        native: number;
+      };
+    };
+  };
+  owner: string;
+  mintedAt: string;
+  createdAt: string;
+  decimals: number | null;
+  mintStages: any[]; // Adjust type if you know the structure of mintStages
+}
+
+interface MarketMagiceden {
+  floorAsk: {
+    id: string;
+    price: {
+      currency: {
+        contract: string;
+        name: string;
+        symbol: string;
+        decimals: number;
+      };
+      amount: {
+        raw: string;
+        decimal: number;
+        usd: number;
+        native: number;
+      };
+    };
+    maker: string;
+    validFrom: number;
+    validUntil: number;
+    source: {
+      id: string;
+      domain: string;
+      name: string;
+      icon: string;
+      url: string;
+    };
+  };
+}
+
+interface TokenResponseMagiceden {
+  tokens: {
+    token: TokenMagiceden;
+    market: MarketMagiceden;
+    updatedAt: string;
+    media: {
+      image: string;
+      imageMimeType: string;
+    };
+  }[];
+  continuation: string;
+}
+
 
 interface MagicEdenCancelOfferCancel {
   steps: StepCancel[];
@@ -659,3 +800,4 @@ interface Trait {
   attributeKey: string;
   attributeValue: string;
 };
+

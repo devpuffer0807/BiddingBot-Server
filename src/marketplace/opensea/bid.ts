@@ -183,6 +183,7 @@ async function buildItemOffer(offerSpecification: ItemOfferSpecification) {
  * @param openseaTraits - Optional traits for the offer.
  */
 export async function bidOnOpensea(
+  bidCount: number,
   wallet_address: string,
   private_key: string,
   slug: string,
@@ -255,8 +256,11 @@ export async function bidOnOpensea(
     const itemSignature = await signOffer(wallet, offer)
     const itemResponse = await postItemOffer(offer, itemSignature)
     const itemOrderHash = itemResponse?.order?.order_hash
-    const key = `opensea:order:${slug}:${asset.tokenId}`;
+    const baseKey = `opensea:order:${slug}:${asset.tokenId}`;
+
+    const key = `${bidCount}:${baseKey}`;
     await redis.setex(key, expiry, itemOrderHash);
+
     const successMessage = `🎉 TOKEN OFFER POSTED TO OPENSEA SUCCESSFULLY FOR: ${slug.toUpperCase()}  TOKEN: ${asset.tokenId} 🎉`
     console.log(BLUE, JSON.stringify(successMessage), RESET);
   }
@@ -379,7 +383,7 @@ export async function bidOnOpensea(
       payload.protocol_data.signature = signObj;
       payload.protocol_address = SEAPORT_1_6;
 
-      await submitOfferToOpensea(payload, expiry, opensea_traits)
+      await submitOfferToOpensea(bidCount, payload, expiry, opensea_traits)
     } catch (error: any) {
       console.log("opensea error", error);
     }
@@ -391,7 +395,7 @@ export async function bidOnOpensea(
  * Posts an offer to OpenSea.
  * @param payload - The payload of the offer.
  */
-async function submitOfferToOpensea(payload: IPayload, expiry = 900, opensea_traits?: string) {
+async function submitOfferToOpensea(bidCount: number, payload: IPayload, expiry = 900, opensea_traits?: string) {
   try {
     const { data: offer } = await
       limiter.schedule(() => axiosInstance.request<OpenseaOffer>({
@@ -410,9 +414,13 @@ async function submitOfferToOpensea(payload: IPayload, expiry = 900, opensea_tra
       ? `trait:${offer.criteria.trait?.type}:${offer.criteria.trait?.value}`
       : "default"
 
+
+    let counter = await redis.incr('opensea:order:counter');
     const slug = offer.criteria.collection.slug
-    const key = `opensea:order:${slug}:${trait}`;
+    const baseKey = `opensea:order:${slug}:${trait}`;
+    const key = `${bidCount}:${baseKey}`;
     await redis.setex(key, expiry, order_hash);
+
     const successMessage = opensea_traits ?
       `🎉 TRAIT OFFER POSTED TO OPENSEA SUCCESSFULLY FOR: ${payload.criteria.collection.slug.toUpperCase()}  TRAIT: ${opensea_traits} 🎉`
       : `🎉 COLLECTION OFFER POSTED TO OPENSEA SUCCESSFULLY FOR: ${payload.criteria.collection.slug.toUpperCase()} 🎉`
@@ -636,6 +644,101 @@ export async function fetchOpenseaOffers(
   } catch (error: any) {
     console.error(RED + "Error fetching offers:", error?.response?.data?.message?.errors[0] || JSON.stringify(error.response.data.message) + RESET);
   }
+}
+
+
+export async function fetchOpenseaListings(collectionSlug: string, limit: number = 100) {
+  try {
+    const baseUrl = `https://api.nfttools.website/opensea/api/v2/listings/collection/${collectionSlug}/all`;
+    let allListings: OpenseaOrder[] = [];
+    let nextCursor: string | null = null;
+
+    while (allListings.length < limit) {
+      const params: any = {
+        next: nextCursor,
+        limit: Math.min(100, limit - allListings.length)
+      }
+
+      const { data } = await limiter.schedule(() => axiosInstance.get<OpenseaListingData>(baseUrl, {
+        headers: {
+          'accept': 'application/json',
+          'X-NFT-API-Key': API_KEY
+        },
+        params: params
+      }))
+
+      allListings = [...allListings, ...data.listings];
+      nextCursor = data.next;
+
+      if (!nextCursor) break;
+    }
+
+    allListings = allListings.slice(0, limit);
+    return allListings.map((item) => +item.protocol_data.parameters.offer[0].identifierOrCriteria)
+  } catch (error: any) {
+    console.error("Error fetching listings:", error?.response?.data?.message || error.message);
+    throw error;
+  }
+}
+interface OpenseaListingData {
+  listings: OpenseaOrder[]
+  next: string
+}
+
+interface OpenseaOrder {
+  order_hash: string;
+  chain: string;
+  type: string;
+  price: OpenseaPrice;
+  protocol_data: OpenseaProtocolData;
+  protocol_address: string;
+}
+
+interface OpenseaPrice {
+  current: OpenseaPriceCurrent;
+}
+
+interface OpenseaPriceCurrent {
+  currency: string;
+  decimals: number;
+  value: string;
+}
+
+interface OpenseaProtocolData {
+  parameters: OpenseaParameters;
+  signature: null;
+}
+
+interface OpenseaParameters {
+  offerer: string;
+  offer: OpenseaOffer[];
+  consideration: OpenseaConsideration[];
+  startTime: string;
+  endTime: string;
+  orderType: number;
+  zone: string;
+  zoneHash: string;
+  salt: string;
+  conduitKey: string;
+  totalOriginalConsiderationItems: number;
+  counter: number;
+}
+
+interface OpenseaOffer {
+  itemType: number;
+  token: string;
+  identifierOrCriteria: string;
+  startAmount: string;
+  endAmount: string;
+}
+
+interface OpenseaConsideration {
+  itemType: number;
+  token: string;
+  identifierOrCriteria: string;
+  startAmount: string;
+  endAmount: string;
+  recipient: string;
 }
 
 

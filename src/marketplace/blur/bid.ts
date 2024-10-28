@@ -25,6 +25,7 @@ const provider = new ethers.providers.AlchemyProvider('mainnet', ALCHEMY_API_KEY
  * @param traits - Optional traits for the offer.
  */
 export async function bidOnBlur(
+  bidCount: number,
   wallet_address: string,
   private_key: string,
   contractAddress: string,
@@ -124,7 +125,7 @@ export async function bidOnBlur(
       ]
     }
 
-    await submitBidToBlur(BLUR_API_URL, accessToken, wallet_address, submitPayload, slug, cancelPayload, expiry, traits);
+    await submitBidToBlur(bidCount, BLUR_API_URL, accessToken, wallet_address, submitPayload, slug, cancelPayload, expiry, traits);
 
   } catch (error: any) {
     console.error("Error in bidOnBlur:", error.message);
@@ -216,6 +217,7 @@ async function formatBidOnBlur(
  * @param slug - The slug of the collection.
  */
 async function submitBidToBlur(
+  bidCount: number,
   url: string,
   accessToken: string,
   walletAddress: string,
@@ -247,10 +249,12 @@ async function submitBidToBlur(
     } else {
       console.log("\x1b[33m", successMessage, RESET);
       const orderKey = traits
-        ? `${JSON.stringify(traits)}`
+        ? `${traits}`
         : "default"
 
-      const key = `blur:order:${slug}:${orderKey}`;
+      const baseKey = `blur:order:${slug}:${orderKey}`;
+      const key = `${bidCount}:${baseKey}`;
+
       await redis.setex(key, expiry, JSON.stringify(cancelPayload));
     }
   } catch (error: any) {
