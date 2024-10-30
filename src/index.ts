@@ -14,6 +14,8 @@ import Task from "./models/task.model";
 import { Queue, Worker } from "bullmq";
 import Wallet from "./models/wallet.model";
 import redisClient from "./utils/redis";
+import { SEAPORT_CONTRACT_ADDRESS, WETH_CONTRACT_ADDRESS, WETH_MIN_ABI } from "./constants";
+import { constants, Contract, ethers, Wallet as Web3Wallet } from "ethers";
 
 const redis = redisClient.getClient()
 
@@ -49,9 +51,11 @@ const CANCEL_MAGICEDEN_BID = "CANCEL_MAGICEDEN_BID"
 const CANCEL_BLUR_BID = "CANCEL_BLUR_BID"
 const START_TASK = "START_TASK"
 const STOP_TASK = "STOP_TASK"
+const MAGICEDEN_MARKETPLACE = "0x9A1D00bEd7CD04BCDA516d721A596eb22Aac6834"
 
 const MAX_RETRIES: number = 5;
 const MARKETPLACE_WS_URL = "wss://wss-marketplace.nfttools.website";
+const ALCHEMY_API_KEY = "HGWgCONolXMB2op5UjPH1YreDCwmSbvx"
 
 const RATE_LIMIT = 30;
 const MAX_WAITING_QUEUE = 10 * RATE_LIMIT;
@@ -127,7 +131,7 @@ startServer().catch(error => {
   console.error('Failed to start server:', error);
 });
 
-// connectWebSocket()
+connectWebSocket()
 
 wss.on('connection', (ws) => {
   console.log(GREEN + 'New WebSocket connection' + RESET);
@@ -299,7 +303,6 @@ async function startTask(task: ITask, start: boolean) {
   }
 }
 
-// @TODO
 async function stopTask(task: ITask, start: boolean) {
   try {
     const taskIndex = currentTasks.findIndex(task => task._id === task._id);
@@ -520,63 +523,76 @@ async function updateMultipleTasksStatus(data: { tasks: ITask[], running: boolea
 }
 
 
-// function connectWebSocket(): void {
-//   ws = new WebSocket(MARKETPLACE_WS_URL);
-//   ws.addEventListener("open", function open() {
-//     console.log(GOLD + "CONNECTED TO MARKETPLACE EVENTS WEBSCKET" + RESET);
-//     retryCount = 0;
-//     if (reconnectTimeoutId !== null) {
-//       clearTimeout(reconnectTimeoutId);
-//       reconnectTimeoutId = null;
-//     }
-//     if (heartbeatIntervalId !== null) {
-//       clearInterval(heartbeatIntervalId);
-//     }
+function connectWebSocket(): void {
+
+  ws = new WebSocket(MARKETPLACE_WS_URL);
+  ws.addEventListener("open", function open() {
+    console.log(GOLD + "CONNECTED TO MARKETPLACE EVENTS WEBSCKET" + RESET);
+    retryCount = 0;
+    if (reconnectTimeoutId !== null) {
+      clearTimeout(reconnectTimeoutId);
+      reconnectTimeoutId = null;
+    }
+    if (heartbeatIntervalId !== null) {
+      clearInterval(heartbeatIntervalId);
+    }
+
+    const task = currentTasks[0]
+    setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(
+          JSON.stringify({
+            event: "ping",
+            "clientId": task.user.toString() || "nfttools to the moon",
+          })
+        );
+      }
+    }, 30000);
 
 
-//     if (currentTasks.length > 0) {
-//       subscribeToCollections(currentTasks as unknown as ITask[])
-//     }
+    if (currentTasks.length > 0) {
+      subscribeToCollections(currentTasks as unknown as ITask[])
+    }
 
-//     ws.on("message", async function incoming(data: string) {
-//       try {
-//         const message = JSON.parse(data.toString())
-//         await handleCounterBid(message);
-//       } catch (error) {
-//         console.log(error);
-//       }
-//     });
-//   });
+    ws.on("message", async function incoming(data: string) {
+      try {
+        const message = JSON.parse(data.toString())
+        await handleCounterBid(message);
+      } catch (error) {
+        console.log(error);
+      }
+    });
+  });
 
-//   // ws.addEventListener("close", function close() {
-//   //   console.log(RED + "DISCONNECTED TO MARKETPLACE EVENTS WEBSCKET" + RESET);
-//   //   if (heartbeatIntervalId !== null) {
-//   //     clearInterval(heartbeatIntervalId);
-//   //     heartbeatIntervalId = null;
-//   //   }
-//   //   attemptReconnect();
-//   // });
+  ws.addEventListener("close", function close() {
+    console.log(RED + "DISCONNECTED FROM MARKETPLACE EVENTS WEBSCKET" + RESET);
+    if (heartbeatIntervalId !== null) {
+      clearInterval(heartbeatIntervalId);
+      heartbeatIntervalId = null;
+    }
+    attemptReconnect();
+  });
 
-//   ws.addEventListener("error", function error(err) {
-//     if (ws) {
-//       ws.close();
-//     }
-//   });
-// }
+  ws.addEventListener("error", function error(err) {
+    if (ws) {
+      ws.close();
+    }
+  });
+}
 
-// function attemptReconnect(): void {
-//   if (retryCount < MAX_RETRIES) {
-//     if (reconnectTimeoutId !== null) {
-//       clearTimeout(reconnectTimeoutId);
-//     }
-//     let delay: number = Math.pow(2, retryCount) * 1000;
-//     console.log(`Attempting to reconnect in ${delay / 1000} seconds...`);
-//     reconnectTimeoutId = setTimeout(connectWebSocket, delay);
-//     retryCount++;
-//   } else {
-//     console.log("Max retries reached. Giving up on reconnecting.");
-//   }
-// }
+function attemptReconnect(): void {
+  if (retryCount < MAX_RETRIES) {
+    if (reconnectTimeoutId !== null) {
+      clearTimeout(reconnectTimeoutId);
+    }
+    let delay: number = Math.pow(2, retryCount) * 1000;
+    console.log(`Attempting to reconnect in ${delay / 1000} seconds...`);
+    reconnectTimeoutId = setTimeout(connectWebSocket, delay);
+    retryCount++;
+  } else {
+    console.log("Max retries reached. Giving up on reconnecting.");
+  }
+}
 
 async function handleCounterBid(message: any) {
   const { contractAddress, slug } = getMarketplaceDetails(message);
@@ -1104,6 +1120,7 @@ async function processOpenseaScheduledBid(task: ITask) {
     const filteredTasks = Object.fromEntries(
       Object.entries(task?.selectedTraits || {}).map(([category, traits]) => [
         category,
+
         traits.filter(trait => trait.availableInMarketplaces.includes("opensea"))
       ]).filter(([_, traits]) => traits.length > 0)
     );
@@ -1134,12 +1151,15 @@ async function processOpenseaScheduledBid(task: ITask) {
 
     const tokenBid = task.bidType === "token" && tokenIds.length > 0
 
-
     if (floor_price === 0) return
 
     console.log(BLUE + `Current OPENSEA floor price for ${task.contract.slug}: ${floor_price} ETH`.toUpperCase() + RESET);
 
     const { offerPriceEth, maxBidPriceEth } = calculateBidPrice(task, floor_price, "opensea")
+
+    const approved = await approveMarketplace(WETH_CONTRACT_ADDRESS, SEAPORT_CONTRACT_ADDRESS, task, maxBidPriceEth);
+
+    if (!approved) return
 
     let offerPrice = BigInt(Math.ceil(offerPriceEth * 1e18));
     const creatorFees: IFee = collectionDetails.creator_fees.null !== undefined
@@ -1464,7 +1484,6 @@ async function processBlurTraitBid(data: {
 
 async function processMagicedenScheduledBid(task: ITask) {
   try {
-
     if (!task.running || !task.selectedMarketplaces.map((marketplace) => marketplace.toLowerCase()).includes("magiceden")) return
 
     const filteredTasks = Object.fromEntries(
@@ -1487,6 +1506,7 @@ async function processMagicedenScheduledBid(task: ITask) {
     const expiration = Math.floor((currentTime + (duration * 60 * 1000)) / 1000);
     const floor_price = await fetchMagicEdenCollectionStats(task.contract.contractAddress)
 
+
     const autoIds = task.tokenIds
       .filter(id => id.toString().toLowerCase().startsWith('bot'))
       .map(id => {
@@ -1497,9 +1517,7 @@ async function processMagicedenScheduledBid(task: ITask) {
 
     const bottlomListing = await fetchMagicEdenTokens(task.contract.contractAddress, autoIds[0])
     const taskTokenIds = task.tokenIds
-
     const tokenIds = [...bottlomListing, ...taskTokenIds]
-
     const tokenBid = task.bidType === "token" && tokenIds.length > 0
 
     if (floor_price === 0) return
@@ -1508,6 +1526,10 @@ async function processMagicedenScheduledBid(task: ITask) {
 
     const magicedenOutbidMargin = task.outbidOptions.magicedenOutbidMargin || 0.0001
     const { offerPriceEth, maxBidPriceEth } = calculateBidPrice(task, floor_price as number, "magiceden")
+
+    const approved = await approveMarketplace(WETH_CONTRACT_ADDRESS, MAGICEDEN_MARKETPLACE, task, maxBidPriceEth);
+    if (!approved) return
+
     let offerPrice = Math.ceil(offerPriceEth * 1e18)
 
     if (tokenBid) {
@@ -1550,8 +1572,12 @@ async function processMagicedenScheduledBid(task: ITask) {
     } else {
       if (task.outbidOptions.outbid) {
         const offer = await fetchMagicEdenOffer("COLLECTION", task.wallet.address, task.contract.contractAddress)
-        const highestOffer = +offer.amount.raw
-        offerPrice = Math.ceil(highestOffer + (magicedenOutbidMargin * 1e18))
+        if (offer && offer.amount) { // Check if offer and offer.amount are defined
+          const highestOffer = +offer.amount.raw;
+          offerPrice = Math.ceil(highestOffer + (magicedenOutbidMargin * 1e18));
+        } else {
+          console.error(RED + `No valid offer received for collection: ${task.contract.slug}` + RESET);
+        }
       }
       if (maxBidPriceEth > 0 && Number(offerPrice) / 1e18 > maxBidPriceEth) {
         console.log(RED + '--------------------------------------------------------------------------------------------------' + RESET);
@@ -1610,8 +1636,12 @@ async function processMagicedenTokenBid(data: {
 
     if (outbidOptions?.outbid) {
       const offer = await fetchMagicEdenOffer("TOKEN", address, contractAddress, tokenId.toString())
-      const highestOffer = +offer.amount.raw
-      collectionOffer = highestOffer + (magicedenOutbidMargin * 1e18)
+      if (offer && offer.amount) { // Check if offer and offer.amount are defined
+        const highestOffer = +offer.amount.raw
+        collectionOffer = highestOffer + (magicedenOutbidMargin * 1e18)
+      } else {
+        console.error(RED + `No valid offer received for tokenId: ${tokenId}` + RESET);
+      }
     }
 
     if (maxBidPriceEth > 0 && Number(collectionOffer / 1e18) > maxBidPriceEth) {
@@ -1801,30 +1831,32 @@ function transformOpenseaTraits(selectedTraits: Record<string, string[]>): { typ
 function subscribeToCollections(tasks: ITask[]) {
   try {
     tasks.forEach((task) => {
+      // Check if ws is defined and ready
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        console.error(RED + `WebSocket is not open for subscribing to collections: ${task.contract.slug}` + RESET);
+        return; // Exit if WebSocket is not ready
+      }
 
-      const connectToOpensea = task.selectedMarketplaces.map((marketplace) => marketplace.toLowerCase()).includes("opensea")
-      const connectToBlur = task.selectedMarketplaces.map((marketplace) => marketplace.toLowerCase()).includes("blur")
-      const connectToMagiceden = task.selectedMarketplaces.map((marketplace) => marketplace.toLowerCase()).includes("magiceden")
-
+      const connectToOpensea = task.selectedMarketplaces.map((marketplace) => marketplace.toLowerCase()).includes("opensea");
+      const connectToBlur = task.selectedMarketplaces.map((marketplace) => marketplace.toLowerCase()).includes("blur");
+      const connectToMagiceden = task.selectedMarketplaces.map((marketplace) => marketplace.toLowerCase()).includes("magiceden");
 
       if (connectToOpensea && task.outbidOptions.counterbid && task.running) {
-        // if (ws.readyState === WebSocket.OPEN) { // Check if WebSocket is open
         const openseaSubscriptionMessage = {
           "slug": task.contract.slug,
           "event": "join_the_party",
           "topic": task.contract.slug,
           "contractAddress": task.contract.contractAddress,
           "clientId": task.user.toString(),
-        }
+        };
 
         ws.send(JSON.stringify(openseaSubscriptionMessage));
-
         console.log('----------------------------------------------------------------------');
         console.log(`SUBSCRIBED TO COLLECTION: ${task.contract.slug} OPENSEA`);
         console.log('----------------------------------------------------------------------');
 
         setInterval(() => {
-          if (ws.readyState === WebSocket.OPEN) { // Check if WebSocket is open
+          if (ws.readyState === WebSocket.OPEN) {
             ws.send(
               JSON.stringify({
                 event: "ping",
@@ -1833,9 +1865,6 @@ function subscribeToCollections(tasks: ITask[]) {
             );
           }
         }, 30000);
-        // } else {
-        // console.error(RED + `WebSocket is not open for OPENSEA subscription: ${task.contract.slug}` + RESET);
-        // }
       }
 
       if (connectToMagiceden && task.outbidOptions.counterbid && task.running) {
@@ -1855,7 +1884,7 @@ function subscribeToCollections(tasks: ITask[]) {
         console.log('----------------------------------------------------------------------');
 
         setInterval(() => {
-          if (ws) {
+          if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(
               JSON.stringify({
                 event: "ping",
@@ -1883,7 +1912,6 @@ function subscribeToCollections(tasks: ITask[]) {
         console.log('----------------------------------------------------------------------');
       }
     });
-
   } catch (error) {
     console.error(RED + 'Error subscribing to collections' + RESET, error);
   }
@@ -1927,6 +1955,59 @@ function checkBlurTraits(incomingBids: any, traits: any) {
 }
 
 
+async function approveMarketplace(currency: string, marketplace: string, task: ITask, maxBidPriceEth: number): Promise<boolean> {
+  try {
+    if (!task?.wallet.openseaApproval) {
+      const provider = new ethers.providers.AlchemyProvider('mainnet', ALCHEMY_API_KEY);
+      const signer = new Web3Wallet(task.wallet.privateKey, provider);
+      const wethContract = new Contract(currency, WETH_MIN_ABI, signer);
+
+      let allowance = await wethContract.allowance(task.wallet.address, marketplace)
+
+      allowance = Number(allowance) / 1e18
+
+      console.log({ allowance, maxBidPriceEth });
+
+      if (allowance > maxBidPriceEth) {
+        return true
+      }
+      console.log(`Approving WETH ${marketplace} as a spender for wallet ${task.wallet.address} with amount: ${constants.MaxUint256.toString()}...`.toUpperCase());
+      const tx = await wethContract.approve(marketplace, constants.MaxUint256);
+      await tx.wait();
+      if (marketplace.toLowerCase() === "0x0000000000000068f116a894984e2db1123eb395".toLowerCase()) {
+        await Wallet.updateOne({ address: { $regex: new RegExp(task.wallet.address, 'i') } }, { openseaApproval: true });
+        await Task.updateOne({ _id: task._id }, { $set: { 'wallet.openseaApproval': true } })
+      }
+      else if (marketplace.toLowerCase() === "0x9A1D00bEd7CD04BCDA516d721A596eb22Aac6834".toLowerCase()) {
+        await Wallet.updateOne({ address: { $regex: new RegExp(task.wallet.address, 'i') } }, { magicedenApproval: true });
+        await Task.updateOne({ _id: task._id }, { $set: { 'wallet.magicedenApproval': true } });
+      }
+      return true
+    } else {
+      return true
+    }
+  } catch (error: any) {
+    let name;
+    if (marketplace.toLowerCase() === "0x0000000000000068f116a894984e2db1123eb395".toLowerCase()) {
+      name = OPENSEA
+    }
+    else if (marketplace.toLowerCase() === "0x9A1D00bEd7CD04BCDA516d721A596eb22Aac6834".toLowerCase()) {
+      name = MAGICEDEN
+    }
+
+    if (error.code === 'INSUFFICIENT_FUNDS') {
+      console.log(RED + '--------------------------------------------------------------------------------------------------------------' + RESET);
+      console.error(RED + `Error: Wallet ${task.wallet.address} could not approve ${name} as a spender. Please ensure your wallet has enough ETH to cover the gas fees and permissions are properly set.`.toUpperCase() + RESET);
+      console.log(RED + '--------------------------------------------------------------------------------------------------------------' + RESET);
+    } else {
+      console.error(RED + `Error: Wallet ${task.wallet.address} could not approve the ${name} as a spender. Task has been stopped.`.toUpperCase() + RESET);
+    }
+    return false
+  }
+}
+
+
+
 interface SelectedTraits {
   [key: string]: {
     name: string;
@@ -1944,6 +2025,9 @@ export interface ITask {
   wallet: {
     address: string;
     privateKey: string;
+    openseaApproval: boolean;
+    blurApproval: boolean;
+    magicedenApproval: boolean
   };
   selectedMarketplaces: string[];
   running: boolean;

@@ -278,8 +278,8 @@ export async function cancelBlurBid(data: BlurCancelPayload) {
       }
     }))
     console.log(JSON.stringify(cancelResponse));
-  } catch (error) {
-    console.log(error);
+  } catch (error: any) {
+    console.log(error.response.data);
   }
 }
 

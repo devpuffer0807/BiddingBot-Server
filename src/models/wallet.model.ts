@@ -6,6 +6,9 @@ interface IWallet extends Document {
   name: string;
   address: string;
   privateKey: string;
+  openseaApproval: boolean
+  blurApproval: boolean
+  magicedenApproval: boolean
 }
 
 const WalletSchema = new Schema<IWallet>(
@@ -14,6 +17,9 @@ const WalletSchema = new Schema<IWallet>(
     name: { type: String, required: true },
     address: { type: String, required: true },
     privateKey: { type: String, required: true },
+    openseaApproval: { type: Boolean, default: false },
+    blurApproval: { type: Boolean, default: false },
+    magicedenApproval: { type: Boolean, default: false }
   },
   { timestamps: true }
 );

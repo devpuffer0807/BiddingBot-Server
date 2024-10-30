@@ -17,6 +17,9 @@ export interface ITask extends Document {
   wallet: {
     address: string;
     privateKey: string;
+    openseaApproval: boolean;
+    blurApproval: boolean;
+    magicedenApproval: boolean
   };
   selectedMarketplaces: string[];
   running: boolean;
@@ -97,6 +100,9 @@ const TaskSchema: Schema = new Schema(
     wallet: {
       address: { type: String, required: true },
       privateKey: { type: String, required: true },
+      openseaApproval: { type: Boolean, default: false },
+      blurApproval: { type: Boolean, default: false },
+      magicedenApproval: { type: Boolean, default: false }
     },
     selectedMarketplaces: { type: [String], required: true },
     running: { type: Boolean, default: false },

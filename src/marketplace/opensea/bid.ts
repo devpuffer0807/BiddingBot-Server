@@ -642,7 +642,10 @@ export async function fetchOpenseaOffers(
       throw new Error("Invalid offer type");
     }
   } catch (error: any) {
-    console.error(RED + "Error fetching offers:", error?.response?.data?.message?.errors[0] || JSON.stringify(error.response.data.message) + RESET);
+    console.error(RED + "Error fetching offers:",
+      error?.response?.data?.message?.errors && error.response.data.message.errors.length > 0
+        ? error.response.data.message.errors[0]
+        : JSON.stringify(error.response.data.message) + RESET);
   }
 }
 
@@ -658,7 +661,6 @@ export async function fetchOpenseaListings(collectionSlug: string, limit: number
         next: nextCursor,
         limit: Math.min(100, limit - allListings.length)
       }
-
       const { data } = await limiter.schedule(() => axiosInstance.get<OpenseaListingData>(baseUrl, {
         headers: {
           'accept': 'application/json',
@@ -666,13 +668,10 @@ export async function fetchOpenseaListings(collectionSlug: string, limit: number
         },
         params: params
       }))
-
       allListings = [...allListings, ...data.listings];
       nextCursor = data.next;
-
       if (!nextCursor) break;
     }
-
     allListings = allListings.slice(0, limit);
     return allListings.map((item) => +item.protocol_data.parameters.offer[0].identifierOrCriteria)
   } catch (error: any) {
@@ -680,6 +679,7 @@ export async function fetchOpenseaListings(collectionSlug: string, limit: number
     throw error;
   }
 }
+
 interface OpenseaListingData {
   listings: OpenseaOrder[]
   next: string
