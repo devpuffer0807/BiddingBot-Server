@@ -1,5 +1,5 @@
 import { ethers } from "ethers";
-const ALCHEMY_API_KEY = "HGWgCONolXMB2op5UjPH1YreDCwmSbvx";
+const ALCHEMY_API_KEY = "0rk2kbu11E5PDyaUqX1JjrNKwG7s4ty5";
 const provider = new ethers.providers.AlchemyProvider("mainnet", ALCHEMY_API_KEY)
 
 export async function getEthBalance(address: string): Promise<number> {

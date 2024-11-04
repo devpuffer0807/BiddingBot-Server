@@ -16,7 +16,7 @@ const CONDUIT_KEY = "0x0000007b02230091a7ed01230072f7006a004d60a8d4e71d599b81042
 const SEAPORT_1_6 = "0x0000000000000068f116a894984e2db1123eb395"
 const WETH_CONTRACT_ADDRESS = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
 const OPENSEA_FEE_ADDRESS = "0x0000a26b00c1F0DF003000390027140000fAa719"
-const ALCHEMY_API_KEY = "HGWgCONolXMB2op5UjPH1YreDCwmSbvx"
+const ALCHEMY_API_KEY = "0rk2kbu11E5PDyaUqX1JjrNKwG7s4ty5"
 const provider = new ethers.providers.AlchemyProvider('mainnet', ALCHEMY_API_KEY);
 const SEAPORT_CONTRACT = new ethers.Contract(SEAPORT_CONTRACT_ADDRESS, SEAPORT_MIN_ABI, provider);
 const RED = '\x1b[31m';
@@ -486,9 +486,9 @@ export async function cancelOrder(orderHash: string, protocolAddress: string, pr
 }
 
 async function signCancelOrder(orderHash: string, protocolAddress: string, privateKey: string) {
+  if (!orderHash) return
 
   const wallet = new Wallet(privateKey, provider);
-
   const domain = {
     name: 'Seaport',
     version: '1.6',
@@ -507,7 +507,7 @@ async function signCancelOrder(orderHash: string, protocolAddress: string, priva
     const signature = await wallet._signTypedData(domain, types, value);
     return signature;
   } catch (error) {
-    console.error("Error signing the cancel order message: ", error);
+    console.error("Error signing the cancel order message for order hash:", orderHash, error);
     return null;
   }
 }

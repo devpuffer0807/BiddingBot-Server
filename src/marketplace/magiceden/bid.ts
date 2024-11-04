@@ -11,7 +11,7 @@ const RESET = '\x1b[0m';
 config()
 
 const API_KEY = process.env.API_KEY as string;
-const ALCHEMY_API_KEY = "HGWgCONolXMB2op5UjPH1YreDCwmSbvx"
+const ALCHEMY_API_KEY = "0rk2kbu11E5PDyaUqX1JjrNKwG7s4ty5"
 const provider = new ethers.providers.AlchemyProvider('mainnet', ALCHEMY_API_KEY);
 
 const redis = redisClient.getClient();
@@ -84,15 +84,15 @@ async function createBidData(
   tokenId?: number | string,
 ) {
 
-  // https://api-mainnet.magiceden.io/v3/rtp/ethereum/execute/bid/v5
   const options = trait || tokenId ? {
     "seaport-v1.6": {
       "useOffChainCancellation": true,
-      "conduitKey": "0x87328c9043E7BF343695554EAAF5a8892f7205e3000000000000000000000000"
+      "conduitKey": "0x87328c9043E7BF343695554EAAF5a8892f7205e3000000000000000000000000",
+
     }
   } : {
     "payment-processor-v2": {
-      useOffChainCancellation: true
+      useOffChainCancellation: true,
     }
   }
 
@@ -107,7 +107,7 @@ async function createBidData(
       orderKind: orderKind,
       orderbook: "reservoir",
       options: options,
-      automatedRoyalties: true,
+      automatedRoyalties: false,
       ...(tokenId ? { token: `${collection}:${tokenId}` } : trait ? { attributeKey: trait.attributeKey, attributeValue: trait.attributeValue } : {})
     }
   ];
@@ -117,6 +117,7 @@ async function createBidData(
     source: "magiceden.io",
     params: params
   };
+
   let response: any;
   try {
     const { data: order } = await limiter.schedule(() => axiosInstance.post<CreateBidData>('https://api.nfttools.website/magiceden/v3/rtp/ethereum/execute/bid/v5', data, {
@@ -236,13 +237,45 @@ async function sendSignedOrderData(bidCount: number, signature: string, data: Si
     const order = JSON.stringify(offerResponse);
 
     const key = `${bidCount}:${baseKey}`;
-    await redis.setex(key, expiry, order);
 
+    // Add retry logic and error handling for Redis operations
+    let retries = 3;
+    while (retries > 0) {
+      try {
+        await redis.setex(key, expiry, order);
+        break;
+      } catch (redisError) {
+        console.error(`Redis error (${retries} retries left):`, redisError);
+        retries--;
+        if (retries === 0) {
+          throw redisError;
+        }
+        // Wait 1 second before retrying
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
 
     console.log(MAGENTA, successMessage, RESET);
     return offerResponse;
   } catch (error: any) {
-    console.log(error.response.data);
+    // Enhanced error logging
+    const errorMessage = error?.response?.data?.message?.message ||
+      error?.response?.data?.message ||
+      error?.message ||
+      'Unknown error';
+
+    console.error('Magic Eden API Error:', {
+      endpoint,
+      errorMessage,
+      statusCode: error?.response?.status,
+      details: error?.response?.data,
+      tokenId: tokenId ? `Token ID: ${tokenId}` : undefined,
+      trait: trait ? `Trait: ${JSON.stringify(trait)}` : undefined,
+      collection: slug
+    });
+
+    // Return null instead of throwing
+    return null;
   }
 }
 
@@ -255,12 +288,15 @@ async function sendSignedOrderData(bidCount: number, signature: string, data: Si
 
  */
 export async function submitSignedOrderData(bidCount: number, order: CreateBidData, wallet: ethers.Wallet, slug: string, expiry = 900, trait?: Trait, tokenId?: number | string) {
-  const signData = order?.steps
-    ?.find((step) => step.id === "order-signature")
-    ?.items?.[0]?.data?.sign;
-
   try {
-    if (!signData || !signData.value) return
+    const signData = order?.steps
+      ?.find((step) => step.id === "order-signature")
+      ?.items?.[0]?.data?.sign;
+
+    if (!signData || !signData.value) {
+      throw new Error('Invalid order signature data');
+    }
+
     const signature = await signOrderData(wallet, signData, trait);
     let data: any;
 
@@ -319,9 +355,22 @@ export async function submitSignedOrderData(bidCount: number, order: CreateBidDa
         console.error('Sign data not found in order steps.');
       }
     }
-    return await sendSignedOrderData(bidCount, signature, data, slug, expiry, trait, tokenId);
+    const result = await sendSignedOrderData(bidCount, signature, data, slug, expiry, trait, tokenId);
+    return result;
   } catch (error: any) {
-    console.error('Error in submitSignedOrderData:', error);
+    // Enhanced error logging
+    const errorDetails = {
+      slug,
+      trait: trait ? JSON.stringify(trait) : undefined,
+      tokenId,
+      error: error?.message || 'Unknown error',
+      response: error?.response?.data
+    };
+
+    console.error('Error in submitSignedOrderData:', errorDetails);
+
+    // Return null instead of throwing
+    return null;
   }
 
 }
