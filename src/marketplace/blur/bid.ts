@@ -1,7 +1,7 @@
 import { BigNumber, ethers, utils, Wallet } from "ethers";
 import { axiosInstance, limiter } from "../../init";
 import redisClient from "../../utils/redis";
-import { RESET } from "../..";
+import { currentTasks, RESET } from "../..";
 import { config } from "dotenv";
 import { getBethBalance } from "../../utils/balance";
 const RED = '\x1b[31m';
@@ -228,6 +228,8 @@ async function submitBidToBlur(
   traits?: string
 ) {
   try {
+    let running = currentTasks.find((task) => task.contract.slug.toLowerCase() === slug.toLowerCase())
+    if (!running) return
     const { data: offers } = await limiter.schedule(() =>
       axiosInstance.request({
         method: 'POST',
@@ -241,8 +243,15 @@ async function submitBidToBlur(
         data: JSON.stringify(submitPayload),
       })
     );
+
+
     const successMessage = traits ? `🎉 TRAIT OFFER POSTED TO BLUR SUCCESSFULLY FOR: ${slug.toUpperCase()} 🎉 TRAIT: ${traits}` : `🎉 OFFER POSTED TO BLUR SUCCESSFULLY FOR: ${slug.toUpperCase()} 🎉`
 
+
+    running = currentTasks.find((task) => task.contract.slug.toLowerCase() === slug.toLowerCase())
+    if (!running) {
+      await cancelBlurBid(cancelPayload)
+    }
 
     if (offers.errors) {
       console.error('Error:', JSON.stringify(offers.errors));

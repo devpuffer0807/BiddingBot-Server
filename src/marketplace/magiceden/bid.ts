@@ -1,7 +1,7 @@
 import { ethers, Wallet } from "ethers";
 import { axiosInstance, limiter } from "../../init";
 import { config } from "dotenv";
-import { MAGENTA } from "../..";
+import { currentTasks, MAGENTA } from "../..";
 import redisClient from "../../utils/redis";
 import { getWethBalance } from "../../utils/balance";
 
@@ -40,6 +40,9 @@ export async function bidOnMagiceden(
   trait?: Trait,
   tokenId?: string | number
 ) {
+  const task = currentTasks.find((task) => task.contract.slug.toLowerCase() === slug.toLowerCase() || task.selectedMarketplaces.includes("MagicEden"))
+  if (!task?.running) return
+
   const expiry = Math.ceil(Number(expirationTime) - (Date.now() / 1000))
   const wallet = new Wallet(privateKey, provider);
   const offerPriceEth = Number(weiPrice) / 1e18
@@ -52,13 +55,13 @@ export async function bidOnMagiceden(
     return
   }
 
-  const order = await createBidData(maker, collection, quantity, weiPrice.toString(), expirationTime, trait, tokenId);
+  const order = await createBidData(slug, maker, collection, quantity, weiPrice.toString(), expirationTime, trait, tokenId);
 
   if (order) {
     const res = await tokenId ?
-      submitSignedOrderData(bidCount, order, wallet, slug, expiry, undefined, tokenId)
-      : trait ? submitSignedOrderData(bidCount, order, wallet, slug, expiry, trait, undefined)
-        : submitSignedOrderData(bidCount, order, wallet, slug, expiry, undefined, undefined)
+      submitSignedOrderData(privateKey, bidCount, order, wallet, slug, expiry, undefined, tokenId)
+      : trait ? submitSignedOrderData(privateKey, bidCount, order, wallet, slug, expiry, trait, undefined)
+        : submitSignedOrderData(privateKey, bidCount, order, wallet, slug, expiry, undefined, undefined)
     return res
   }
   return order
@@ -75,6 +78,7 @@ export async function bidOnMagiceden(
  * @returns The bid data.
  */
 async function createBidData(
+  slug: string,
   maker: string,
   collection: string,
   quantity: number,
@@ -119,6 +123,10 @@ async function createBidData(
   };
 
   let response: any;
+
+  const task = currentTasks.find((task) => task.contract.slug.toLowerCase() === slug.toLowerCase() || task.selectedMarketplaces.includes("MagicEden"))
+  if (!task?.running) return
+
   try {
     const { data: order } = await limiter.schedule(() => axiosInstance.post<CreateBidData>('https://api.nfttools.website/magiceden/v3/rtp/ethereum/execute/bid/v5', data, {
       headers: {
@@ -201,7 +209,9 @@ async function signOrderData(wallet: ethers.Wallet, signData: any, trait?: Trait
 * @param trait - Collection trait
  * @returns The response from the API.
  */
-async function sendSignedOrderData(bidCount: number, signature: string, data: SignedData, slug: string, expiry: number = 900, trait?: Trait, tokenId?: number | string) {
+async function sendSignedOrderData(privateKey: string, bidCount: number, signature: string, data: SignedData, slug: string, expiry: number = 900, trait?: Trait, tokenId?: number | string) {
+  const task = currentTasks.find((task) => task.contract.slug.toLowerCase() === slug.toLowerCase() || task.selectedMarketplaces.includes("MagicEden"))
+  if (!task?.running) return
 
   const endpoint = trait || tokenId
     ? "https://api.nfttools.website/magiceden/v3/rtp/ethereum/order/v3"
@@ -256,6 +266,11 @@ async function sendSignedOrderData(bidCount: number, signature: string, data: Si
     }
 
     console.log(MAGENTA, successMessage, RESET);
+
+    const task = currentTasks.find((task) => task.contract.slug.toLowerCase() === slug.toLowerCase() || task.selectedMarketplaces.includes("MagicEden"))
+    if (!task?.running) {
+      await canelMagicEdenBid([order], privateKey)
+    }
     return offerResponse;
   } catch (error: any) {
     // Enhanced error logging
@@ -287,7 +302,10 @@ async function sendSignedOrderData(bidCount: number, signature: string, data: Si
  * @param slug - Collection slug
 
  */
-export async function submitSignedOrderData(bidCount: number, order: CreateBidData, wallet: ethers.Wallet, slug: string, expiry = 900, trait?: Trait, tokenId?: number | string) {
+export async function submitSignedOrderData(privateKey: string, bidCount: number, order: CreateBidData, wallet: ethers.Wallet, slug: string, expiry = 900, trait?: Trait, tokenId?: number | string) {
+  const task = currentTasks.find((task) => task.contract.slug.toLowerCase() === slug.toLowerCase() || task.selectedMarketplaces.includes("MagicEden"))
+  if (!task?.running) return
+
   try {
     const signData = order?.steps
       ?.find((step) => step.id === "order-signature")
@@ -355,7 +373,7 @@ export async function submitSignedOrderData(bidCount: number, order: CreateBidDa
         console.error('Sign data not found in order steps.');
       }
     }
-    const result = await sendSignedOrderData(bidCount, signature, data, slug, expiry, trait, tokenId);
+    const result = await sendSignedOrderData(privateKey, bidCount, signature, data, slug, expiry, trait, tokenId);
     return result;
   } catch (error: any) {
     // Enhanced error logging
@@ -418,6 +436,73 @@ export async function canelMagicEdenBid(orderIds: string[], privateKey: string) 
     console.log(error?.response?.data?.message || JSON.stringify(error));
   }
 }
+
+// export async function canelMagicEdenBid(orderIds: string[], privateKey: string) {
+//   if (!orderIds.length) return;
+
+//   const maxRetries = 3;
+//   let retryCount = 0;
+
+//   while (retryCount < maxRetries) {
+//     try {
+//       const { data } = await limiter.schedule(() => axiosInstance.post<MagicEdenCancelOfferCancel>(
+//         'https://api.nfttools.website/magiceden/v3/rtp/ethereum/execute/cancel/v3',
+//         { orderIds },
+//         {
+//           headers: {
+//             'content-type': 'application/json',
+//             'X-NFT-API-Key': API_KEY
+//           }
+//         }
+//       ));
+
+//       const cancelStep = data?.steps?.find((step) => step.id === "cancellation-signature");
+//       if (!cancelStep) {
+//         throw new Error('No cancellation signature step found');
+//       }
+
+//       const cancelItem = cancelStep?.items[0]?.data?.sign;
+//       const signature = await signCancelOrder(cancelItem, privateKey);
+
+//       if (!signature) {
+//         throw new Error('Failed to sign cancellation order');
+//       }
+
+//       const body = cancelStep?.items[0]?.data?.post?.body || {
+//         orderIds,
+//         orderKind: 'payment-processor-v2'
+//       };
+
+//       const { data: cancelResponse } = await limiter.schedule(() =>
+//         axiosInstance.post(
+//           `https://api.nfttools.website/magiceden/v3/rtp/ethereum/execute/cancel-signature/v1?signature=${signature}`,
+//           body,
+//           {
+//             headers: {
+//               'content-type': 'application/json',
+//               'X-NFT-API-Key': API_KEY
+//             }
+//           }
+//         )
+//       );
+
+//       console.log(`Successfully cancelled ${orderIds.length} MagicEden bids`);
+//       return cancelResponse;
+
+//     } catch (error: any) {
+//       retryCount++;
+//       console.error(`Failed to cancel MagicEden bids (attempt ${retryCount}/${maxRetries}):`,
+//         error?.response?.data?.message || error.message);
+
+//       if (retryCount === maxRetries) {
+//         throw new Error(`Failed to cancel MagicEden bids after ${maxRetries} attempts`);
+//       }
+
+//       // Wait before retrying
+//       await new Promise(resolve => setTimeout(resolve, 1000 * retryCount));
+//     }
+//   }
+// }
 
 async function signCancelOrder(cancelItem: any | undefined, privateKey: string) {
   try {

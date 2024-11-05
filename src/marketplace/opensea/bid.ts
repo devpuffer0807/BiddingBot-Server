@@ -1,13 +1,14 @@
 import { BigNumber, Contract, ethers, Wallet } from "ethers";
 import { SEAPORT_CONTRACT_ADDRESS, SEAPORT_MIN_ABI, WETH_MIN_ABI } from "../../constants";
 import { axiosInstance, limiter } from "../../init";
-import { BLUE } from "../..";
+import { BLUE, currentTasks } from "../..";
 import redisClient from "../../utils/redis";
 import { config } from "dotenv";
 import { getWethBalance } from "../../utils/balance";
 
 config()
 
+const OPENSEA_PROTOCOL_ADDRESS = "0x0000000000000068F116a894984e2DB1123eB395"
 const API_KEY = process.env.API_KEY as string;
 const OPENSEA_ITEM_ZONE = "0x000056f7000000ece9003ca63978907a00ffd100"
 const OPENSEA_COLLECTION_ZONE = "0x004C00500000aD104D7DBd00e3ae0A5C00560C00"
@@ -139,6 +140,8 @@ async function buildItemOffer(offerSpecification: ItemOfferSpecification) {
       expirationSeconds,
       walletAddress
     } = offerSpecification
+    const task = currentTasks.find((task) => task.contract.contractAddress.toLowerCase() === offerSpecification.assetContractAddress.toLowerCase() || task.selectedMarketplaces.includes("OpenSea"))
+    if (!task?.running) return
 
     const consideration = await getItemConsideration(
       assetContractAddress,
@@ -194,6 +197,9 @@ export async function bidOnOpensea(
   opensea_traits?: string,
   asset?: { contractAddress: string, tokenId: number }
 ) {
+
+  const task = currentTasks.find((task) => task.contract.slug.toLowerCase() === slug.toLowerCase() || task.selectedMarketplaces.includes("OpenSea"))
+  if (!task?.running) return
   const divider = BigNumber.from(10000);
   const roundedNumber = Math.round(Number(offer_price) / 1e14) * 1e14;
   const offerPrice = BigNumber.from(roundedNumber.toString());
@@ -301,12 +307,6 @@ export async function bidOnOpensea(
       },
       protocol_address: SEAPORT_1_6
     }
-
-    const wethContract = new Contract(WETH_CONTRACT_ADDRESS, WETH_MIN_ABI, wallet);
-    const OPENSEA_CONDUIT = "0x1e0049783f008a0085193e00003d00cd54003c71"
-
-    // await ensureAllowance(wethContract, wallet.address, offerPrice, OPENSEA_CONDUIT);
-
     // reset consideration list and count
     payload.protocol_data.parameters.consideration = [];
     payload.protocol_data.parameters.totalOriginalConsiderationItems = 2;
@@ -383,7 +383,10 @@ export async function bidOnOpensea(
       payload.protocol_data.signature = signObj;
       payload.protocol_address = SEAPORT_1_6;
 
-      await submitOfferToOpensea(bidCount, payload, expiry, opensea_traits)
+      const task = currentTasks.find((task) => task.contract.slug.toLowerCase() === slug.toLowerCase() || task.selectedMarketplaces.includes("OpenSea"))
+      if (!task?.running) return
+
+      await submitOfferToOpensea(private_key, slug, bidCount, payload, expiry, opensea_traits)
     } catch (error: any) {
       console.log("opensea error", error);
     }
@@ -395,8 +398,12 @@ export async function bidOnOpensea(
  * Posts an offer to OpenSea.
  * @param payload - The payload of the offer.
  */
-async function submitOfferToOpensea(bidCount: number, payload: IPayload, expiry = 900, opensea_traits?: string) {
+async function submitOfferToOpensea(privateKey: string, slug: string, bidCount: number, payload: IPayload, expiry = 900, opensea_traits?: string) {
   try {
+
+    let task = currentTasks.find((task) => task.contract.slug.toLowerCase() === slug.toLowerCase() || task.selectedMarketplaces.includes("OpenSea"))
+    if (!task?.running) return
+
     const { data: offer } = await
       limiter.schedule(() => axiosInstance.request<OpenseaOffer>({
         method: 'POST',
@@ -415,7 +422,6 @@ async function submitOfferToOpensea(bidCount: number, payload: IPayload, expiry 
       : "default"
 
 
-    let counter = await redis.incr('opensea:order:counter');
     const slug = offer.criteria.collection.slug
     const baseKey = `opensea:order:${slug}:${trait}`;
     const key = `${bidCount}:${baseKey}`;
@@ -425,9 +431,15 @@ async function submitOfferToOpensea(bidCount: number, payload: IPayload, expiry 
       `🎉 TRAIT OFFER POSTED TO OPENSEA SUCCESSFULLY FOR: ${payload.criteria.collection.slug.toUpperCase()}  TRAIT: ${opensea_traits} 🎉`
       : `🎉 COLLECTION OFFER POSTED TO OPENSEA SUCCESSFULLY FOR: ${payload.criteria.collection.slug.toUpperCase()} 🎉`
     console.log(BLUE, successMessage, RESET);
+
+    task = currentTasks.find((task) => task.contract.slug.toLowerCase() === slug.toLowerCase() || task.selectedMarketplaces.includes("OpenSea"))
+    if (!task?.running) {
+      await new Promise(resolve => setTimeout(resolve, 500));
+      console.log({ order_hash });
+      await cancelOrder(order_hash, OPENSEA_PROTOCOL_ADDRESS, privateKey)
+    }
   } catch (error: any) {
     console.log("opensea post offer error", error?.response?.data || error);
-
   }
 }
 
@@ -480,7 +492,7 @@ export async function cancelOrder(orderHash: string, protocolAddress: string, pr
     console.log(JSON.stringify({ cancelled: true }));
     return response.data;
   } catch (error: any) {
-    console.error("Error sending the cancel order request: ", error.response ? error.response.data : error.message);
+    // console.error("Error sending the cancel order request: ", error.response ? error.response.data : error.message);
     return null;
   }
 }
