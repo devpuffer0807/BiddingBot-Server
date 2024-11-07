@@ -197,7 +197,6 @@ export async function bidOnOpensea(
   opensea_traits?: string,
   asset?: { contractAddress: string, tokenId: number }
 ) {
-
   const task = currentTasks.find((task) => task.contract.slug.toLowerCase() === slug.toLowerCase() || task.selectedMarketplaces.includes("OpenSea"))
   if (!task?.running) return
   const divider = BigNumber.from(10000);
@@ -399,11 +398,9 @@ export async function bidOnOpensea(
  * @param payload - The payload of the offer.
  */
 async function submitOfferToOpensea(privateKey: string, slug: string, bidCount: number, payload: IPayload, expiry = 900, opensea_traits?: string) {
+  let task = currentTasks.find((task) => task.contract.slug.toLowerCase() === slug.toLowerCase() || task.selectedMarketplaces.includes("OpenSea"))
+  if (!task?.running) return
   try {
-
-    let task = currentTasks.find((task) => task.contract.slug.toLowerCase() === slug.toLowerCase() || task.selectedMarketplaces.includes("OpenSea"))
-    if (!task?.running) return
-
     const { data: offer } = await
       limiter.schedule(() => axiosInstance.request<OpenseaOffer>({
         method: 'POST',
