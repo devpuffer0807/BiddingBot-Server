@@ -314,9 +314,7 @@ export async function fetchBlurBid(collection: string, criteriaType: 'TRAIT' | '
   } catch (error: any) {
     console.error("Error fetching executable bids:", error.response?.data || error.message);
   }
-}
-
-
+} 3
 
 export async function fetchBlurCollectionStats(slug: string) {
   const URL = `https://api.nfttools.website/blur/v1/collections/${slug}`;
@@ -380,7 +378,6 @@ interface BlurBidResponse {
   success: boolean;
   signatures: Signature[];
   [key: string]: any; // Allow additional properties
-
 }
 
 interface Signature {
