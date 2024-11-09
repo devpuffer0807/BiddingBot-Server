@@ -289,7 +289,9 @@ export async function cancelBlurBid(data: BlurCancelPayload) {
     }))
     console.log(JSON.stringify(cancelResponse));
   } catch (error: any) {
-    console.log(error.response.data);
+    if (error.response?.data?.message?.message !== 'No bids found') {
+      console.log(error.response.data);
+    }
   }
 }
 
