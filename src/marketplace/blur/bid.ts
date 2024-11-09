@@ -273,6 +273,7 @@ async function submitBidToBlur(
 
 export async function cancelBlurBid(data: BlurCancelPayload) {
   try {
+    if (!data || !data.payload || !data.privateKey) return
     const { payload, privateKey } = data
     const wallet = new Wallet(privateKey, provider);
     const walletAddress = wallet.address

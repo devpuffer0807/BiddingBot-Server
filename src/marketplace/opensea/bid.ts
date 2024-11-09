@@ -465,7 +465,7 @@ async function buildOffer(buildPayload: any) {
 }
 
 export async function cancelOrder(orderHash: string, protocolAddress: string, privateKey: string) {
-
+  if (!orderHash || !protocolAddress || !privateKey) return
   const offererSignature = await signCancelOrder(orderHash, protocolAddress, privateKey);
 
   if (!offererSignature) {
