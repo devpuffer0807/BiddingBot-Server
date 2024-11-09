@@ -659,11 +659,13 @@ export async function fetchOpenseaOffers(
 }
 
 
-export async function fetchOpenseaListings(collectionSlug: string, limit: number = 100) {
+export async function fetchOpenseaListings(collectionSlug: string, limit?: number) {
   try {
     const baseUrl = `https://api.nfttools.website/opensea/api/v2/listings/collection/${collectionSlug}/all`;
     let allListings: OpenseaOrder[] = [];
     let nextCursor: string | null = null;
+
+    if (!limit) return
 
     while (allListings.length < limit) {
       const params: any = {

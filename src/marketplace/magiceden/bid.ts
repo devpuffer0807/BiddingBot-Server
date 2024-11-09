@@ -257,46 +257,46 @@ async function sendSignedOrderData(privateKey: string, bidCount: number, signatu
     return offerResponse;
   } catch (error: any) {
     // Enhanced error logging
-    const errorMessage = error?.response?.data?.message?.message ||
-      error?.response?.data?.message ||
-      error?.message ||
-      'Unknown error';
+    // const errorMessage = error?.response?.data?.message?.message ||
+    //   error?.response?.data?.message ||
+    //   error?.message ||
+    //   'Unknown error';
 
 
-    if (errorMessage.includes("Invalid marketplace fee")) {
-      const fee = +data.order.data.offer[0].startAmount * 0.02;
-      const address = extractAddress(error?.response?.data?.message?.message);
+    // if (errorMessage.includes("Invalid marketplace fee")) {
+    //   const fee = +data.order.data.offer[0].startAmount * 0.02;
+    //   const address = extractAddress(error?.response?.data?.message?.message);
 
-      const considerations = data.order.data.consideration;
-      const marketplaceFeeIndex = considerations.findIndex((item: any) =>
-        item.itemType === 1
-        && item.token.toLowerCase() === "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2".toLowerCase()
-        && +item.identifierOrCriteria === 0,
-      );
+    //   const considerations = data.order.data.consideration;
+    //   const marketplaceFeeIndex = considerations.findIndex((item: any) =>
+    //     item.itemType === 1
+    //     && item.token.toLowerCase() === "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2".toLowerCase()
+    //     && +item.identifierOrCriteria === 0,
+    //   );
 
-      if (marketplaceFeeIndex !== -1) {
-        considerations[marketplaceFeeIndex] = {
-          "itemType": 1,
-          "token": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
-          "identifierOrCriteria": "0",
-          "startAmount": fee.toString(),
-          "endAmount": fee.toString(),
-          "recipient": address || considerations[marketplaceFeeIndex].recipient
-        };
-      }
+    //   if (marketplaceFeeIndex !== -1) {
+    //     considerations[marketplaceFeeIndex] = {
+    //       "itemType": 1,
+    //       "token": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    //       "identifierOrCriteria": "0",
+    //       "startAmount": fee.toString(),
+    //       "endAmount": fee.toString(),
+    //       "recipient": address || considerations[marketplaceFeeIndex].recipient
+    //     };
+    //   }
 
-      await sendSignedOrderData(privateKey, bidCount, signature, data, slug, expiry, trait, tokenId);
-    } else {
-      console.error('Magic Eden API Error:', {
-        endpoint,
-        errorMessage,
-        statusCode: error?.response?.status,
-        details: error?.response?.data,
-        tokenId: tokenId ? `Token ID: ${tokenId}` : undefined,
-        trait: trait ? `Trait: ${JSON.stringify(trait)}` : undefined,
-        collection: slug
-      });
-    }
+    //   await sendSignedOrderData(privateKey, bidCount, signature, data, slug, expiry, trait, tokenId);
+    // } else {
+    // console.error('Magic Eden API Error:', {
+    //   endpoint,
+    //   errorMessage,
+    //   statusCode: error?.response?.status,
+    //   details: error?.response?.data,
+    //   tokenId: tokenId ? `Token ID: ${tokenId}` : undefined,
+    //   trait: trait ? `Trait: ${JSON.stringify(trait)}` : undefined,
+    //   collection: slug
+    // });
+    // }
     return null;
   }
 }
@@ -544,7 +544,7 @@ export async function fetchMagicEdenCollectionStats(contractAddress: string) {
   }
 }
 
-export async function fetchMagicEdenTokens(collectionId: string, limit: number = 50) {
+export async function fetchMagicEdenTokens(collectionId: string, limit?: number) {
   const params: any = {
     excludeSpam: true,
     excludeBurnt: true,
@@ -560,6 +560,8 @@ export async function fetchMagicEdenTokens(collectionId: string, limit: number =
   const allTokens: number[] = [];
   try {
     let totalFetched = 0;
+
+    if (!limit) return
 
     do {
       const { data } = await limiter.schedule(() => axiosInstance.get<TokenResponseMagiceden>(url, {

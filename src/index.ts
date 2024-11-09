@@ -1576,7 +1576,7 @@ async function processOpenseaScheduledBid(task: ITask) {
       })
       .filter(id => id !== null);
 
-    const bottlomListing = await fetchOpenseaListings(task.contract.slug, autoIds[0])
+    const bottlomListing = await fetchOpenseaListings(task.contract.slug, autoIds[0]) ?? []
     const taskTokenIds = task.tokenIds
 
     const tokenIds = [...bottlomListing, ...taskTokenIds]
@@ -1949,7 +1949,10 @@ async function processMagicedenScheduledBid(task: ITask) {
       })
       .filter(id => id !== null);
 
-    const bottlomListing = await fetchMagicEdenTokens(task.contract.contractAddress, autoIds[0])
+    console.log({ autoIds: autoIds[0] });
+
+
+    const bottlomListing = await fetchMagicEdenTokens(task.contract.contractAddress, autoIds[0]) ?? []
     const taskTokenIds = task.tokenIds
     const tokenIds = [...bottlomListing, ...taskTokenIds]
     const tokenBid = task.bidType === "token" && tokenIds.length > 0
