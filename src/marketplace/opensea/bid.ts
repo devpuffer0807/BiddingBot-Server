@@ -217,9 +217,6 @@ export async function bidOnOpensea(
   }
 
   const totalOffersWithNew = totalExistingOffers / 1e18 + Number(offerPriceEth)
-
-  console.log({ totalOffersWithNew });
-
   if (totalOffersWithNew > wethBalance * 1000) {
     console.log(RED + '-----------------------------------------------------------------------------------------------------------' + RESET);
     console.log(RED + `Total offers (${totalOffersWithNew} WETH) would exceed 1000x available BETH balance (${wethBalance * 1000} BETH). SKIPPING ...`.toUpperCase() + RESET);

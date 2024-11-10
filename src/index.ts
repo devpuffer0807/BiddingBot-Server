@@ -993,7 +993,6 @@ async function updateMultipleTasksStatus(data: { tasks: ITask[], running: boolea
   }
 }
 
-
 function connectWebSocket(): void {
 
   ws = new WebSocket(MARKETPLACE_WS_URL);
@@ -1008,17 +1007,26 @@ function connectWebSocket(): void {
       clearInterval(heartbeatIntervalId);
     }
 
-    const task = currentTasks[0]
-    setInterval(() => {
+    // Generate a default client ID if no tasks exist
+    const clientId = currentTasks.length > 0 && currentTasks[0]?.user
+      ? currentTasks[0].user.toString()
+      : "nfttools-default-client";
+
+    // Set up heartbeat interval
+    heartbeatIntervalId = setInterval(() => {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(
           JSON.stringify({
             event: "ping",
-            "clientId": task.user.toString() || "nfttools to the moon",
+            clientId
           })
         );
       }
     }, 30000);
+
+    if (currentTasks.length > 0) {
+      subscribeToCollections(currentTasks as unknown as ITask[])
+    }
 
 
     if (currentTasks.length > 0) {
@@ -1045,6 +1053,7 @@ function connectWebSocket(): void {
   });
 
   ws.addEventListener("error", function error(err) {
+    console.error(RED + "WebSocket connection error:" + RESET, err);
     if (ws) {
       ws.close();
     }
