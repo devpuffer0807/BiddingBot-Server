@@ -5,8 +5,7 @@ import axiosRetry, { IAxiosRetryConfig } from "axios-retry";
 let limiter: Bottleneck;
 let axiosInstance: AxiosInstance;
 let API_KEY: string;
-let RATE_LIMIT: number = 24;
-
+let RATE_LIMIT: number = 30;
 
 async function fetchRateLimitFromDatabase() {
   return { rateLimit: 30, apiKey: "d3348c68-097d-48b5-b5f0-0313cc05e92d" };
@@ -23,6 +22,7 @@ const retryConfig: IAxiosRetryConfig = {
   },
   retryCondition: async (error: any) => {
     if (error.response && error.response.status === 429) {
+      return true;
     }
     if (
       axiosRetry.isNetworkError(error) ||

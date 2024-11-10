@@ -27,11 +27,7 @@ export async function getCollectionDetails(slug: string) {
       ))
 
     let creator_fees;
-
-    console.table(collection.fees)
-
     let enforceCreatorFee = false;
-
     if (collection?.fees?.length > 1) {
       creator_fees = {
         [collection.fees[1].recipient]: collection.fees[1].fee * 100

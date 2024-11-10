@@ -262,7 +262,6 @@ async function sendSignedOrderData(privateKey: string, bidCount: number, signatu
       error?.message ||
       'Unknown error';
 
-
     if (errorMessage.includes("Invalid marketplace fee")) {
       const fee = +data.order.data.offer[0].startAmount * 0.02;
       const address = extractAddress(error?.response?.data?.message?.message);
@@ -285,7 +284,16 @@ async function sendSignedOrderData(privateKey: string, bidCount: number, signatu
         };
       }
 
-      await sendSignedOrderData(privateKey, bidCount, signature, data, slug, expiry, trait, tokenId);
+      // Resign the order after updating the marketplace fee
+      const signData = data?.steps
+        ?.find((step: any) => step.id === "order-signature")
+        ?.items?.[0]?.data?.sign;
+
+      if (signData && signData.value) {
+        const wallet = new Wallet(privateKey, provider);
+        const signature = await signOrderData(wallet, signData, trait);
+        await sendSignedOrderData(privateKey, bidCount, signature, data, slug, expiry, trait, tokenId);
+      }
     } else {
       console.error('Magic Eden API Error:', {
         endpoint,
@@ -395,10 +403,7 @@ export async function submitSignedOrderData(privateKey: string, bidCount: number
       error: error?.message || 'Unknown error',
       response: error?.response?.data
     };
-
     console.error('Error in submitSignedOrderData:', errorDetails);
-
-    // Return null instead of throwing
     return null;
   }
 
@@ -519,7 +524,6 @@ export async function fetchMagicEdenOffer(type: "COLLECTION" | "TRAIT" | "TOKEN"
       const offer = data?.orders?.filter((order: any) => order.maker.toLowerCase() !== walletAddress.toLocaleLowerCase())[0]?.price || 0
       return offer
     }
-
   } catch (error: any) {
     console.log(error);
   }
@@ -546,6 +550,7 @@ export async function fetchMagicEdenCollectionStats(contractAddress: string) {
 }
 
 export async function fetchMagicEdenTokens(collectionId: string, limit?: number) {
+  const startTime = Date.now();
   const params: any = {
     excludeSpam: true,
     excludeBurnt: true,
@@ -561,9 +566,7 @@ export async function fetchMagicEdenTokens(collectionId: string, limit?: number)
   const allTokens: number[] = [];
   try {
     let totalFetched = 0;
-
     if (!limit) return
-
     do {
       const { data } = await limiter.schedule(() => axiosInstance.get<TokenResponseMagiceden>(url, {
         headers: {
@@ -578,7 +581,13 @@ export async function fetchMagicEdenTokens(collectionId: string, limit?: number)
       totalFetched += tokens.length;
       params.continuation = data.continuation;
 
+      console.log(MAGENTA, `[MAGICEDEN] Fetched ${totalFetched}/${limit} Bottom Listed Tokens`.toUpperCase(), RESET);
+
     } while (params.continuation && totalFetched < limit);
+
+    const timeElapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+    console.log(MAGENTA, `✨ Successfully fetched ${totalFetched} tokens in ${timeElapsed} seconds ✨`, RESET);
+
     return allTokens.slice(0, limit);
   } catch (error) {
     console.error("Error fetching Magic Eden tokens:", error);
