@@ -10,7 +10,7 @@ const RESET = '\x1b[0m';
 
 config()
 
-const API_KEY = process.env.API_KEY as string;
+const API_KEY = process.env.API_KEY
 const ALCHEMY_API_KEY = "0rk2kbu11E5PDyaUqX1JjrNKwG7s4ty5"
 const provider = new ethers.providers.AlchemyProvider('mainnet', ALCHEMY_API_KEY);
 
@@ -118,7 +118,7 @@ async function createBidData(
 
   const data = {
     maker: maker,
-    source: "magiceden.io",
+    source: "magiceden.us",
     params: params
   };
 
@@ -230,7 +230,6 @@ async function sendSignedOrderData(privateKey: string, bidCount: number, signatu
         }
       )
     );
-
     const successMessage = tokenId ? `🎉 TOKEN OFFER POSTED TO MAGICEDEN SUCCESSFULLY FOR: ${slug.toUpperCase()} TOKEN: ${tokenId} 🎉` :
       trait ?
         `🎉 TRAIT OFFER POSTED TO MAGICEDEN SUCCESSFULLY FOR: ${slug.toUpperCase()} TRAIT: ${JSON.stringify(trait)} 🎉`
@@ -360,7 +359,7 @@ export async function submitSignedOrderData(privateKey: string, bidCount: number
         },
         "isNonFlagged": false,
         "orderbook": "reservoir",
-        "source": "magiceden.io"
+        "source": "magiceden.us"
       };
     } else if (tokenId) {
       data = order?.steps
@@ -387,7 +386,7 @@ export async function submitSignedOrderData(privateKey: string, bidCount: number
               orderbook: "reservoir",
             },
           ],
-          source: "magiceden.io",
+          source: "magiceden.us",
         };
       } else {
         console.error('Sign data not found in order steps.');
@@ -411,13 +410,29 @@ export async function submitSignedOrderData(privateKey: string, bidCount: number
 
 export async function cancelMagicEdenBid(orderIds: string[], privateKey: string) {
   try {
-    if (!orderIds.length || !privateKey) return
-    const { data } = await limiter.schedule(() => axiosInstance.post<MagicEdenCancelOfferCancel>('https://api.nfttools.website/magiceden/v3/rtp/ethereum/execute/cancel/v3', { orderIds }, {
-      headers: {
-        'content-type': 'application/json',
-        'X-NFT-API-Key': API_KEY
+
+    const processedOrderIds = orderIds.map(orderId => {
+      try {
+        const parsed = JSON.parse(orderId);
+        return parsed.orderId || orderId;
+      } catch {
+        return orderId;
       }
-    }));
+    });
+
+    if (!processedOrderIds.length) return
+
+    const { data } = await limiter.schedule(() => axiosInstance.post<MagicEdenCancelOfferCancel>(
+      'https://api.nfttools.website/magiceden/v3/rtp/ethereum/execute/cancel/v3',
+      { orderIds: processedOrderIds },
+      {
+        headers: {
+          'content-type': 'application/json',
+          'X-NFT-API-Key': API_KEY
+        }
+      }
+    ));
+
     const cancelStep = data?.steps?.find((step) => step.id === "cancellation-signature")
     const cancelItem = cancelStep?.items[0]?.data?.sign
     const cancelData = cancelItem ? cancelItem : {
@@ -429,18 +444,18 @@ export async function cancelMagicEdenBid(orderIds: string[], privateKey: string)
       },
       "types": { "OrderHashes": [{ "name": "orderHashes", "type": "bytes32[]" }] },
       "value": {
-        "orderHashes": [...orderIds]
+        "orderHashes": processedOrderIds
       },
       "primaryType": "OrderHashes"
     }
     const signature = await signCancelOrder(cancelData, privateKey)
     const body = cancelStep?.items[0].data.post.body
     const cancelBody = cancelItem ? body : {
-      orderIds: [
-        ...orderIds
-      ],
+      orderIds: processedOrderIds
+      ,
       orderKind: 'payment-processor-v2'
     }
+
     const { data: cancelResponse } = await limiter.schedule(() => axiosInstance.post(`https://api.nfttools.website/magiceden/v3/rtp/ethereum/execute/cancel-signature/v1?signature=${signature}`, cancelBody, {
       headers: {
         'content-type': 'application/json',
@@ -511,7 +526,6 @@ export async function fetchMagicEdenOffer(type: "COLLECTION" | "TRAIT" | "TOKEN"
         limit: '100',
         normalizeRoyalties: 'false'
       };
-
       const { data } = await limiter.schedule(() =>
         axiosInstance.get(URL, {
           params: queryParams,
@@ -521,6 +535,7 @@ export async function fetchMagicEdenOffer(type: "COLLECTION" | "TRAIT" | "TOKEN"
           }
         })
       );
+
       const offer = data?.orders?.filter((order: any) => order.maker.toLowerCase() !== walletAddress.toLocaleLowerCase())[0]?.price || 0
       return offer
     }
@@ -542,6 +557,7 @@ export async function fetchMagicEdenCollectionStats(contractAddress: string) {
         'X-NFT-API-Key': API_KEY
       }
     }));
+
     return +data.floorPrice.amount
   } catch (error) {
     console.error('Error fetching Magic Eden collection stats:', error);
@@ -568,6 +584,7 @@ export async function fetchMagicEdenTokens(collectionId: string, limit?: number)
     let totalFetched = 0;
     if (!limit) return
     do {
+
       const { data } = await limiter.schedule(() => axiosInstance.get<TokenResponseMagiceden>(url, {
         headers: {
           accept: "application/json",
@@ -584,9 +601,6 @@ export async function fetchMagicEdenTokens(collectionId: string, limit?: number)
       console.log(MAGENTA, `[MAGICEDEN] Fetched ${totalFetched}/${limit} Bottom Listed Tokens`.toUpperCase(), RESET);
 
     } while (params.continuation && totalFetched < limit);
-
-    const timeElapsed = ((Date.now() - startTime) / 1000).toFixed(2);
-    console.log(MAGENTA, `✨ Successfully fetched ${totalFetched} tokens in ${timeElapsed} seconds ✨`, RESET);
 
     return allTokens.slice(0, limit);
   } catch (error) {

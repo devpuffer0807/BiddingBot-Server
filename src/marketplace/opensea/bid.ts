@@ -219,7 +219,7 @@ export async function bidOnOpensea(
   const totalOffersWithNew = totalExistingOffers / 1e18 + Number(offerPriceEth)
   if (totalOffersWithNew > wethBalance * 1000) {
     console.log(RED + '-----------------------------------------------------------------------------------------------------------' + RESET);
-    console.log(RED + `Total offers (${totalOffersWithNew} WETH) would exceed 1000x available BETH balance (${wethBalance * 1000} BETH). SKIPPING ...`.toUpperCase() + RESET);
+    console.log(RED + `Total offers (${totalOffersWithNew} WETH) would exceed 1000x available BETH balance (${wethBalance * 1000} WETH). SKIPPING ...`.toUpperCase() + RESET);
     console.log(RED + '-----------------------------------------------------------------------------------------------------------' + RESET);
     return
   }
@@ -254,7 +254,6 @@ export async function bidOnOpensea(
     };
 
     if (!offer) {
-      console.log("NO OFFER CREATED FOR OPENSEA");
       return
     }
     offer.consideration.push(opensea_consideration);

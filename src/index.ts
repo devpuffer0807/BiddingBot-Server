@@ -58,7 +58,7 @@ const MAX_RETRIES: number = 5;
 const MARKETPLACE_WS_URL = "wss://wss-marketplace.nfttools.website";
 const ALCHEMY_API_KEY = "0rk2kbu11E5PDyaUqX1JjrNKwG7s4ty5"
 
-const RATE_LIMIT = 30;
+const RATE_LIMIT = 100;
 const MAX_WAITING_QUEUE = 10 * RATE_LIMIT;
 const OPENSEA_PROTOCOL_ADDRESS = "0x0000000000000068F116a894984e2DB1123eB395"
 
@@ -141,7 +141,7 @@ async function startServer() {
       const downtime = currentTime - parseInt(lastRuntime);
       if (downtime > DOWNTIME_THRESHOLD) {
         console.log(YELLOW + `Server was down for ${Math.round(downtime / 60000)} minutes. Clearing queue...` + RESET);
-        await queue.obliterate();
+        await queue.drain();
       }
     }
 
@@ -184,6 +184,9 @@ wss.on('connection', (ws) => {
           break;
         case 'toggle-status':
           await updateStatus(message.data);
+          break;
+        case 'stop-task':
+          await stopTask(message.data, false);
           break;
         case 'update-multiple-tasks-status':
           await updateMultipleTasksStatus(message.data);
@@ -302,7 +305,14 @@ async function processUpdatedTask(task: ITask) {
     if (existingTaskIndex !== -1) {
       currentTasks.splice(existingTaskIndex, 1, task);
       console.log(YELLOW + `Updated existing task: ${task.contract.slug}` + RESET);
-      subscribeToCollections([task]);
+      if (task.running) {
+        await stopTask(task, false)
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        await startTask(task, false)
+      }
+      if (task.running && task.outbidOptions.counterbid) {
+        subscribeToCollections([task]);
+      }
     } else {
       console.log(RED + `Attempted to update non-existent task: ${task.contract.slug}` + RESET);
     }
@@ -348,9 +358,9 @@ async function stopTask(task: ITask, start: boolean, marketplace?: string) {
         console.log(GREEN + `Cancel Attempt ${attempt + 1}/${maxAttempts} for task ${task.contract.slug}` + RESET);
 
         await updateTaskStatus(task, start, marketplace);
-        await cancelAllRelatedBids(task, marketplace);
         await removePendingAndWaitingBids(task, marketplace);
         await waitForRunningJobsToComplete(task, marketplace);
+        await cancelAllRelatedBids(task, marketplace);
         await cancelAllRelatedBidsWithRetry(task, marketplace);
 
         break;
@@ -373,7 +383,8 @@ async function stopTask(task: ITask, start: boolean, marketplace?: string) {
 async function removePendingAndWaitingBids(task: ITask, marketplace?: string) {
   try {
     const jobs = await queue.getJobs(['waiting', 'delayed', 'failed', 'paused', 'prioritized', 'repeat', 'wait', 'waiting', 'waiting-children']);
-    let jobnames: string[] = []
+    let jobnames: string[] = [OPENSEA_SCHEDULE, OPENSEA_TRAIT_BID, OPENSEA_TOKEN_BID, MAGICEDEN_SCHEDULE, MAGICEDEN_TRAIT_BID, MAGICEDEN_TOKEN_BID, BLUR_SCHEDULE, BLUR_TRAIT_BID]
+
 
     switch (marketplace?.toLowerCase()) {
       case OPENSEA.toLowerCase():
@@ -388,7 +399,7 @@ async function removePendingAndWaitingBids(task: ITask, marketplace?: string) {
         jobnames = [BLUR_SCHEDULE, BLUR_TRAIT_BID]
         break;
       default:
-        jobnames = []
+        jobnames = [OPENSEA_SCHEDULE, OPENSEA_TRAIT_BID, OPENSEA_TOKEN_BID, MAGICEDEN_SCHEDULE, MAGICEDEN_TRAIT_BID, MAGICEDEN_TOKEN_BID, BLUR_SCHEDULE, BLUR_TRAIT_BID]
     }
 
     const relatedJobs = jobs.filter(job => {
@@ -402,14 +413,13 @@ async function removePendingAndWaitingBids(task: ITask, marketplace?: string) {
     await Promise.all(relatedJobs.map(job => job.remove()));
     console.log(GREEN + `Removed ${relatedJobs.length} pending and waiting bids for task: ${task.contract.slug}` + RESET);
   } catch (error) {
-    console.error(RED + `Error removing pending and waiting bids for task: ${task.contract.slug}` + RESET, error);
   }
 }
 
 async function waitForRunningJobsToComplete(task: ITask, marketplace?: string) {
   try {
     const checkInterval = 1000;
-    let jobnames: string[] = []
+    let jobnames: string[] = [OPENSEA_SCHEDULE, OPENSEA_TRAIT_BID, OPENSEA_TOKEN_BID, MAGICEDEN_SCHEDULE, MAGICEDEN_TRAIT_BID, MAGICEDEN_TOKEN_BID, BLUR_SCHEDULE, BLUR_TRAIT_BID]
 
     switch (marketplace?.toLowerCase()) {
       case OPENSEA.toLowerCase():
@@ -424,7 +434,7 @@ async function waitForRunningJobsToComplete(task: ITask, marketplace?: string) {
         jobnames = [BLUR_SCHEDULE, BLUR_TRAIT_BID]
         break;
       default:
-        jobnames = []
+        jobnames = [OPENSEA_SCHEDULE, OPENSEA_TRAIT_BID, OPENSEA_TOKEN_BID, MAGICEDEN_SCHEDULE, MAGICEDEN_TRAIT_BID, MAGICEDEN_TOKEN_BID, BLUR_SCHEDULE, BLUR_TRAIT_BID]
     }
 
     while (true) {
@@ -572,7 +582,7 @@ async function updateTaskStatus(task: ITask, running: boolean, marketplace?: str
   const taskIndex = currentTasks.findIndex(t => t._id === task._id);
   if (taskIndex !== -1) {
     if (marketplace) {
-      currentTasks[taskIndex].selectedMarketplaces = currentTasks[taskIndex].selectedMarketplaces.filter((item) => item.toLowerCase() !== marketplace.toLowerCase())
+      return
     } else {
       currentTasks[taskIndex].running = running;
     }
@@ -582,7 +592,11 @@ async function updateTaskStatus(task: ITask, running: boolean, marketplace?: str
 
 async function cancelAllRelatedBids(task: ITask, marketplace?: string) {
   const { openseaBids, magicedenBids, blurBids } = await getAllRelatedBids(task);
+
   if (!marketplace) {
+
+    console.log("cancel bid from all marketplace");
+
     await cancelOpenseaBids(openseaBids, task.wallet.privateKey, task.contract.slug);
     await cancelMagicedenBids(magicedenBids, task.wallet.privateKey, task.contract.slug);
     await cancelBlurBids(blurBids, task.wallet.privateKey, task.contract.slug);
@@ -650,8 +664,10 @@ async function cancelOpenseaBids(bids: string[], privateKey: string, slug: strin
   await Promise.all(bids.map(key => redis.del(key)));
 }
 
-async function cancelMagicedenBids(orderIds: string[], privateKey: string, slug: string) {
-  const bidData = await Promise.all(orderIds.map(key => redis.get(key)));
+async function cancelMagicedenBids(orderKeys: string[], privateKey: string, slug: string) {
+
+  const bidData = await Promise.all(orderKeys.map(key => redis.get(key)));
+
   const extractedOrderIds = bidData.map(bid => {
     if (!bid) return null;
 
@@ -671,6 +687,7 @@ async function cancelMagicedenBids(orderIds: string[], privateKey: string, slug:
       return null;
     }
   }).filter(id => id !== null);
+
   if (extractedOrderIds.length) {
     await queue.add(CANCEL_MAGICEDEN_BID, { orderIds: extractedOrderIds, privateKey }, { priority: 1 });
   }
@@ -679,7 +696,7 @@ async function cancelMagicedenBids(orderIds: string[], privateKey: string, slug:
   if (offerKeys.length) {
     await redis.del(...offerKeys);
   }
-  await Promise.all(orderIds.map(key => redis.del(key)));
+  await Promise.all(orderKeys.map(key => redis.del(key)));
 
 }
 
@@ -702,7 +719,6 @@ async function cancelBlurBids(bids: any[], privateKey: string, slug: string) {
   }
   await Promise.all(bids.map(key => redis.del(key)));
 }
-
 
 async function updateStatus(task: ITask) {
   try {
@@ -778,7 +794,7 @@ async function updateMarketplace(task: ITask) {
 async function handleOutgoingMarketplace(marketplace: string, task: ITask, selectedTraits: any) {
   const maxAttempts = 10;
   const baseDelay = 500;
-
+  await stopTask(task, false, marketplace)
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
@@ -810,7 +826,6 @@ async function handleOutgoingMarketplace(marketplace: string, task: ITask, selec
     }
   }
 
-  await stopTask(task, false, marketplace)
 }
 
 
@@ -1058,6 +1073,7 @@ function connectWebSocket(): void {
       ws.close();
     }
   });
+
 }
 
 function attemptReconnect(): void {
