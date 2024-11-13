@@ -34,14 +34,13 @@ export async function getWethBalance(address: string): Promise<number> {
   try {
     const cacheKey = `weth_balance:${address}`;
     const cachedBalance = await redis.get(cacheKey);
-    
-    // If we can't acquire the lock, return cached balance or 0
-    if (!await acquireLock(address, 'weth')) {
-      return cachedBalance ? Number(cachedBalance) : 0;
+
+    // If we can't acquire the lock but have cached balance, return it
+    if (!await acquireLock(address, 'weth') && cachedBalance) {
+      return Number(cachedBalance);
     }
 
     try {
-      // Recheck cache after acquiring lock
       const cachedBalanceAfterLock = await redis.get(cacheKey);
       if (cachedBalanceAfterLock) {
         return Number(cachedBalanceAfterLock);
@@ -88,10 +87,10 @@ export async function getBethBalance(address: string): Promise<number> {
   try {
     const cacheKey = `beth_balance:${address}`;
     const cachedBalance = await redis.get(cacheKey);
-    
-    // If we can't acquire the lock, return cached balance or 0
-    if (!await acquireLock(address, 'beth')) {
-      return cachedBalance ? Number(cachedBalance) : 0;
+
+    // If we can't acquire the lock but have cached balance, return it
+    if (!await acquireLock(address, 'beth') && cachedBalance) {
+      return Number(cachedBalance);
     }
 
     try {

@@ -20,6 +20,7 @@ import { AbortController } from 'node-abort-controller';
 
 const SEAPORT = '0x1e0049783f008a0085193e00003d00cd54003c71';
 const redis = redisClient.getClient()
+const bullRedis = redisClient.getBullClient()
 
 config()
 export const MAGENTA = '\x1b[35m';
@@ -63,10 +64,12 @@ const MAX_WAITING_QUEUE = 10 * CONCURRENCY;
 const OPENSEA_PROTOCOL_ADDRESS = "0x0000000000000068F116a894984e2DB1123eB395"
 
 const itemLocks = new Map();
-const queue = new Queue(QUEUE_NAME);
+const queue = new Queue(QUEUE_NAME, {
+  connection: bullRedis
+});
 
 const queueEvents = new QueueEvents(QUEUE_NAME, {
-  connection: redis
+  connection: bullRedis
 });
 
 const app = express();
@@ -160,7 +163,6 @@ startServer().catch(error => {
   console.error('Failed to start server:', error);
 });
 
-connectWebSocket()
 
 wss.on('connection', (ws) => {
   console.log(GREEN + 'New WebSocket connection' + RESET);
@@ -198,6 +200,10 @@ wss.on('connection', (ws) => {
     console.log(YELLOW + 'WebSocket connection closed' + RESET);
   };
 });
+
+
+connectWebSocket()
+
 
 const worker = new Worker(QUEUE_NAME, async (job) => {
   const abortController = new AbortController();
@@ -264,7 +270,7 @@ const worker = new Worker(QUEUE_NAME, async (job) => {
   }
 },
   {
-    connection: redis,
+    connection: bullRedis,
     concurrency: CONCURRENCY,
     removeOnComplete: { count: 0 },
     limiter: {
