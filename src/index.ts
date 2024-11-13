@@ -58,19 +58,12 @@ const MAX_RETRIES: number = 5;
 const MARKETPLACE_WS_URL = "wss://wss-marketplace.nfttools.website";
 const ALCHEMY_API_KEY = "0rk2kbu11E5PDyaUqX1JjrNKwG7s4ty5"
 
-const RATE_LIMIT = 100;
-const MAX_WAITING_QUEUE = 10 * RATE_LIMIT;
+const CONCURRENCY = 64 * 1.5;
+const MAX_WAITING_QUEUE = 10 * CONCURRENCY;
 const OPENSEA_PROTOCOL_ADDRESS = "0x0000000000000068F116a894984e2DB1123eB395"
 
 const itemLocks = new Map();
 const queue = new Queue(QUEUE_NAME);
-
-
-async function initializeQueue() {
-  console.log("starting queue");
-
-  // await queue.setGlobalConcurrency(RATE_LIMIT);
-}
 
 const queueEvents = new QueueEvents(QUEUE_NAME, {
   connection: redis
@@ -129,7 +122,6 @@ const LAST_RUNTIME_KEY = 'server:last_runtime';
 async function startServer() {
   try {
     await initialize();
-    await initializeQueue();
     await mongoose.connect(process.env.MONGODB_URI as string);
     console.log('Connected to MongoDB');
 
@@ -208,17 +200,13 @@ wss.on('connection', (ws) => {
 });
 
 const worker = new Worker(QUEUE_NAME, async (job) => {
-  // Create abort controller for this job
   const abortController = new AbortController();
   jobAbortControllers.set(job.id, abortController);
-
   const itemId = job.data.itemId;
-  await waitForUnlock(itemId, job.name);
-
   try {
+    await waitForUnlock(itemId, job.name);
     itemLocks.set(itemId, true);
 
-    // Check for abort signal before processing
     if (abortController.signal.aborted) {
       throw new Error('Job aborted');
     }
@@ -277,8 +265,12 @@ const worker = new Worker(QUEUE_NAME, async (job) => {
 },
   {
     connection: redis,
-    concurrency: RATE_LIMIT,
+    concurrency: CONCURRENCY,
     removeOnComplete: { count: 0 },
+    limiter: {
+      max: 64,
+      duration: 1000,
+    },
     removeOnFail: { count: 0 }
   }
 );
@@ -308,7 +300,7 @@ async function processUpdatedTask(task: ITask) {
       if (task.running) {
         await stopTask(task, false)
         await new Promise(resolve => setTimeout(resolve, 1000));
-        await startTask(task, false)
+        await startTask(task, true)
       }
       if (task.running && task.outbidOptions.counterbid) {
         subscribeToCollections([task]);

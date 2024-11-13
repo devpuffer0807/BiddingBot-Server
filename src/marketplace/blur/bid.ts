@@ -171,7 +171,7 @@ async function getAccessToken(url: string, private_key: string): Promise<string 
     if (cachedToken) {
       return cachedToken;
     }
-    let response: any = await limiter.schedule(() => axiosInstance
+    let response: any = await limiter.schedule({ priority: 5 }, () => axiosInstance
       .post(`${url}/auth/challenge`, options, { headers }));
     const message = response.data.message;
     const signature = await wallet.signMessage(message);
@@ -182,7 +182,7 @@ async function getAccessToken(url: string, private_key: string): Promise<string 
       hmac: response.data.hmac,
       signature: signature
     };
-    response = await limiter.schedule(() => axiosInstance
+    response = await limiter.schedule({ priority: 5 }, () => axiosInstance
       .post(`${url}/auth/login`, data, { headers }));
     const accessToken = response.data.accessToken;
     await redis.set(key, accessToken, 'EX', 2 * 60 * 60);
@@ -207,7 +207,7 @@ async function formatBidOnBlur(
   buildPayload: any
 ) {
   try {
-    const { data } = await limiter.schedule(() =>
+    const { data } = await limiter.schedule({ priority: 5 }, () =>
       axiosInstance.request<BlurBidResponse>({
         method: 'POST',
         url: `${url}/v1/collection-bids/format`,
@@ -248,7 +248,7 @@ async function submitBidToBlur(
   try {
     let running = currentTasks.find((task) => task.contract.slug.toLowerCase() === slug.toLowerCase())
     if (!running) return
-    const { data: offers } = await limiter.schedule(() =>
+    const { data: offers } = await limiter.schedule({ priority: 5 }, () =>
       axiosInstance.request({
         method: 'POST',
         url: `${url}/v1/collection-bids/submit`,
@@ -297,7 +297,7 @@ export async function cancelBlurBid(data: BlurCancelPayload) {
     const walletAddress = wallet.address
     const accessToken = await getAccessToken(BLUR_API_URL, privateKey);
     const endpoint = `${BLUR_API_URL}/v1/collection-bids/cancel`
-    const { data: cancelResponse } = await limiter.schedule(() => axiosInstance.post(endpoint, payload, {
+    const { data: cancelResponse } = await limiter.schedule({ priority: 1 }, () => axiosInstance.post(endpoint, payload, {
       headers: {
         'content-type': 'application/json',
         authToken: accessToken,
@@ -316,7 +316,7 @@ export async function cancelBlurBid(data: BlurCancelPayload) {
 export async function fetchBlurBid(collection: string, criteriaType: 'TRAIT' | 'COLLECTION', criteriaValue: Record<string, string>) {
   const url = `https://api.nfttools.website/blur/v1/collections/${collection}/executable-bids`;
   try {
-    const { data } = await limiter.schedule(() => axiosInstance.get<BlurBidResponse>(url, {
+    const { data } = await limiter.schedule({ priority: 2 }, () => axiosInstance.get<BlurBidResponse>(url, {
       params: {
         filters: JSON.stringify({
           criteria: {
@@ -340,7 +340,7 @@ export async function fetchBlurBid(collection: string, criteriaType: 'TRAIT' | '
 export async function fetchBlurCollectionStats(slug: string) {
   const URL = `https://api.nfttools.website/blur/v1/collections/${slug}`;
   try {
-    const { data } = await limiter.schedule(() => axiosInstance.get(URL, {
+    const { data } = await limiter.schedule({ priority: 2 }, () => axiosInstance.get(URL, {
       headers: {
         'content-type': 'application/json',
         'X-NFT-API-Key': API_KEY,
