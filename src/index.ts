@@ -63,7 +63,7 @@ const CONCURRENCY = 64 * 1.5;
 const MAX_WAITING_QUEUE = 10 * CONCURRENCY;
 const OPENSEA_PROTOCOL_ADDRESS = "0x0000000000000068F116a894984e2DB1123eB395"
 
-const itemLocks = new Map();
+// const itemLocks = new Map();
 const queue = new Queue(QUEUE_NAME, {
   connection: bullRedis
 });
@@ -88,7 +88,7 @@ let waitingQueueCount = 0;
 
 const walletsArr: string[] = []
 
-const jobAbortControllers = new Map();
+// const jobAbortControllers = new Map();
 
 async function fetchCurrentTasks() {
   try {
@@ -206,16 +206,16 @@ connectWebSocket()
 
 
 const worker = new Worker(QUEUE_NAME, async (job) => {
-  const abortController = new AbortController();
-  jobAbortControllers.set(job.id, abortController);
+  // const abortController = new AbortController();
+  // jobAbortControllers.set(job.id, abortController);
   const itemId = job.data.itemId;
   try {
-    await waitForUnlock(itemId, job.name);
-    itemLocks.set(itemId, true);
+    // await waitForUnlock(itemId, job.name);
+    // itemLocks.set(itemId, true);
 
-    if (abortController.signal.aborted) {
-      throw new Error('Job aborted');
-    }
+    // if (abortController.signal.aborted) {
+    //   throw new Error('Job aborted');
+    // }
 
     switch (job.name) {
       case OPENSEA_SCHEDULE:
@@ -265,8 +265,8 @@ const worker = new Worker(QUEUE_NAME, async (job) => {
         console.log(`Unknown job type: ${job.name}`);
     }
   } finally {
-    itemLocks.delete(itemId);
-    jobAbortControllers.delete(job.id);
+    // itemLocks.delete(itemId);
+    // jobAbortControllers.delete(job.id);
   }
 },
   {
@@ -409,7 +409,11 @@ async function removePendingAndWaitingBids(task: ITask, marketplace?: string) {
       return matchesSlug;
     });
     await Promise.all(relatedJobs.map(job => job.remove()));
-    console.log(GREEN + `Removed ${relatedJobs.length} pending and waiting bids for task: ${task.contract.slug}` + RESET);
+
+    if (relatedJobs.length > 0) {
+      console.log(RED + `Removed ${relatedJobs.length} pending and waiting bids for task: ${task.contract.slug}`.toUpperCase() + RESET);
+
+    }
   } catch (error) {
   }
 }
@@ -447,7 +451,6 @@ async function waitForRunningJobsToComplete(task: ITask, marketplace?: string) {
       });
 
       if (relatedJobs?.length === 0) {
-        console.log(GREEN + `All running jobs for task ${task.contract.slug} have completed.` + RESET);
         break;
       }
       await new Promise(resolve => setTimeout(resolve, checkInterval));
@@ -592,9 +595,6 @@ async function cancelAllRelatedBids(task: ITask, marketplace?: string) {
   const { openseaBids, magicedenBids, blurBids } = await getAllRelatedBids(task);
 
   if (!marketplace) {
-
-    console.log("cancel bid from all marketplace");
-
     await cancelOpenseaBids(openseaBids, task.wallet.privateKey, task.contract.slug);
     await cancelMagicedenBids(magicedenBids, task.wallet.privateKey, task.contract.slug);
     await cancelBlurBids(blurBids, task.wallet.privateKey, task.contract.slug);
@@ -662,40 +662,53 @@ async function cancelOpenseaBids(bids: string[], privateKey: string, slug: strin
   await Promise.all(bids.map(key => redis.del(key)));
 }
 
+const BATCH_SIZE = 1000; // Define batch size constant
+
 async function cancelMagicedenBids(orderKeys: string[], privateKey: string, slug: string) {
-
-  const bidData = await Promise.all(orderKeys.map(key => redis.get(key)));
-
-  const extractedOrderIds = bidData.map(bid => {
-    if (!bid) return null;
-
-    try {
-      const parsed = JSON.parse(bid);
-
-      if (parsed.results) {
-        return parsed.results[0].orderId;
-      }
-      if (parsed.message && parsed.orderId) {
-        return parsed.orderId;
-      }
-
-      return null;
-    } catch (e) {
-      console.error('Error parsing bid data:', e);
-      return null;
-    }
-  }).filter(id => id !== null);
-
-  if (extractedOrderIds.length) {
-    await queue.add(CANCEL_MAGICEDEN_BID, { orderIds: extractedOrderIds, privateKey }, { priority: 1 });
+  if (!orderKeys.length) {
+    return;
   }
+  const bidData = await Promise.all(orderKeys.map(key => redis.get(key)));
+  const extractedOrderIds = bidData
+    .map(bid => {
+      if (!bid) return null;
+      try {
+        const parsed = JSON.parse(bid);
 
+        if (parsed.results) {
+          return parsed.results[0].orderId;
+        }
+        if (parsed.message && parsed.orderId) {
+          return parsed.orderId;
+        }
+
+        return null;
+      } catch (e) {
+        console.error('Error parsing bid data:', e);
+        return null;
+      }
+    })
+    .filter(id => id !== null);
+  for (let i = 0; i < extractedOrderIds.length; i += BATCH_SIZE) {
+    const batch = extractedOrderIds.slice(i, i + BATCH_SIZE);
+    console.log(RED + `DEleting  batch ${Math.floor(i / BATCH_SIZE) + 1} of ${Math.ceil(extractedOrderIds.length / BATCH_SIZE)} (${batch.length} MAGICEDEN BIDS)`.toUpperCase() + RESET);
+    await queue.add(CANCEL_MAGICEDEN_BID, { orderIds: batch, privateKey }, { priority: 1 });
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
   const offerKeys = await redis.keys(`*:magiceden:${slug}:*`);
   if (offerKeys.length) {
     await redis.del(...offerKeys);
   }
+
   await Promise.all(orderKeys.map(key => redis.del(key)));
 
+  const remainingOrderKeys = await redis.keys(`*:magiceden:order:${slug}:*`);
+  if (remainingOrderKeys.length > 0) {
+    console.log(RED + `Found ${remainingOrderKeys.length} residual MagicEden bids for ${slug}, continuing cancellation...`.toUpperCase() + RESET);
+    await cancelMagicedenBids(remainingOrderKeys, privateKey, slug);
+  } else {
+    console.log(GREEN + `Successfully cancelled all MagicEden bids for ${slug}`.toUpperCase() + RESET);
+  }
 }
 
 async function cancelBlurBids(bids: any[], privateKey: string, slug: string) {
@@ -796,7 +809,6 @@ async function handleOutgoingMarketplace(marketplace: string, task: ITask, selec
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
-      console.log(GREEN + `Cancel Attempt ${attempt + 1}/${maxAttempts} for ${marketplace} marketplace on task ${task.contract.slug}` + RESET);
       const config = getMarketplaceConfig(marketplace.toLowerCase());
 
       if (!config) return;
@@ -824,44 +836,6 @@ async function handleOutgoingMarketplace(marketplace: string, task: ITask, selec
     }
   }
 
-}
-
-
-
-async function abortActiveJobs(jobs: any[]) {
-  await Promise.all(jobs.map(async job => {
-    try {
-      const controller = jobAbortControllers.get(job.id);
-      if (controller) {
-        controller.abort();
-        jobAbortControllers.delete(job.id);
-      }
-
-      await Promise.race([
-        job.waitUntilFinished(queueEvents, 30000),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('Job timeout')), 30000))
-      ]);
-
-      try {
-        await job.remove();
-      } catch (removeError: any) {
-        if (removeError.message.includes('locked')) {
-          console.log(YELLOW + `Job ${job.id} is locked, skipping removal` + RESET);
-        } else {
-          throw removeError;
-        }
-      }
-    } catch (error: any) {
-      console.log(YELLOW + `Job ${job.id} timed out or failed: ${error.message}` + RESET);
-      setTimeout(async () => {
-        try {
-          await job.remove();
-        } catch (delayedRemoveError) {
-          console.log(YELLOW + `Could not remove job ${job.id} after delay` + RESET);
-        }
-      }, 5000);
-    }
-  }));
 }
 
 async function cancelExistingBids(marketplace: string, task: ITask, selectedTraits: any) {
@@ -2318,10 +2292,10 @@ async function waitForUnlock(itemId: string, jobType: string) {
 
   waitingQueueCount++;
   try {
-    while (itemId && itemLocks.get(itemId)) {
-      console.log(`Waiting for item ${itemId} to be unlocked for ${jobType}.`);
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-    }
+    // while (itemId && itemLocks.get(itemId)) {
+    console.log(`Waiting for item ${itemId} to be unlocked for ${jobType}.`);
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    // }
   } finally {
     waitingQueueCount--;
   }

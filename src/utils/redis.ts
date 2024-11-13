@@ -12,7 +12,6 @@ const getRedisUrl = () => {
   return REDIS_URI;
 };
 
-// Create two different Redis client configurations
 const defaultConfig = {
   maxRetriesPerRequest: 3,
   retryStrategy: (times: number) => {
