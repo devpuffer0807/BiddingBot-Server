@@ -34,7 +34,6 @@ export async function bidOnMagiceden(
   collection: string,
   quantity: number,
   weiPrice: string,
-  expirationTime: string,
   privateKey: string,
   slug: string,
   trait?: Trait,
@@ -43,7 +42,12 @@ export async function bidOnMagiceden(
   const task = currentTasks.find((task) => task.contract.slug.toLowerCase() === slug.toLowerCase() && task.selectedMarketplaces.includes("MagicEden"))
   if (!task?.running) return
 
-  const expiry = Math.ceil(Number(expirationTime) - (Date.now() / 1000))
+  const bidExpiry = getExpiry(task.bidDuration)
+  const duration = bidExpiry / 60 || 15; // minutes
+  const currentTime = new Date().getTime();
+  const expiration = Math.floor((currentTime + (duration * 60 * 1000)) / 1000);
+  const expiry = Math.ceil(Number(expiration) - (Date.now() / 1000))
+
   const wallet = new Wallet(privateKey, provider);
   const offerPriceEth = Number(weiPrice) / 1e18
   const wethBalance = await getWethBalance(maker)
@@ -55,7 +59,7 @@ export async function bidOnMagiceden(
     return
   }
 
-  const order = await createBidData(slug, maker, collection, quantity, weiPrice.toString(), expirationTime, trait, tokenId);
+  const order = await createBidData(slug, maker, collection, quantity, weiPrice.toString(), expiration.toString(), trait, tokenId);
 
   if (order) {
     const res = await tokenId ?
@@ -134,7 +138,7 @@ async function createBidData(
     }));
     return order;
   } catch (error: any) {
-    console.log(error.response.data);
+    console.log(error?.response?.data || JSON.stringify(error));
   }
 }
 
@@ -405,7 +409,6 @@ export async function submitSignedOrderData(privateKey: string, bidCount: number
 
 export async function cancelMagicEdenBid(orderIds: string[], privateKey: string) {
   try {
-
     const processedOrderIds = orderIds.map(orderId => {
       try {
         const parsed = JSON.parse(orderId);
@@ -414,9 +417,7 @@ export async function cancelMagicEdenBid(orderIds: string[], privateKey: string)
         return orderId;
       }
     });
-
     if (!processedOrderIds.length) return
-
     const { data } = await limiter.schedule({ priority: 1 }, () => axiosInstance.post<MagicEdenCancelOfferCancel>(
       'https://api.nfttools.website/magiceden/v3/rtp/ethereum/execute/cancel/v3',
       { orderIds: processedOrderIds },
@@ -604,6 +605,18 @@ export async function fetchMagicEdenTokens(collectionId: string, limit?: number)
   }
 }
 
+
+function getExpiry(bidDuration: { value: number; unit: string }) {
+  const expiry = bidDuration.unit === 'minutes'
+    ? bidDuration.value * 60
+    : bidDuration.unit === 'hours'
+      ? bidDuration.value * 3600
+      : bidDuration.unit === 'days'
+        ? bidDuration.value * 86400
+        : 900;
+
+  return expiry
+}
 
 interface TokenMagiceden {
   chainId: number;

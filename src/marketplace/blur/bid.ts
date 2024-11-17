@@ -34,7 +34,6 @@ export async function bidOnBlur(
   expiry = 900,
   traits?: string
 ) {
-
   const bethBalance = await getBethBalance(wallet_address)
   let offerPriceEth: string | number = (Number(offer_price) / 1e18)
 
@@ -110,8 +109,8 @@ export async function bidOnBlur(
   let data = build?.signatures?.[0];
   if (!data) {
     console.error(`Invalid response, retrying... SLUG: ${slug} TRAITS: ${traits}`);
-    build = await formatBidOnBlur(BLUR_API_URL, accessToken, wallet_address, buildPayload); // Retry
-    data = build?.signatures?.[0]; // Reassign data after retry
+    build = await formatBidOnBlur(BLUR_API_URL, accessToken, wallet_address, buildPayload);
+    data = build?.signatures?.[0];
   }
   if (!data) {
     console.error('Invalid response after retry');
@@ -144,6 +143,7 @@ export async function bidOnBlur(
     }
 
     await submitBidToBlur(bidCount, BLUR_API_URL, accessToken, wallet_address, submitPayload, slug, cancelPayload, expiry, traits);
+    // add offer keys
 
   } catch (error: any) {
     console.error("Error in bidOnBlur:", error.message);

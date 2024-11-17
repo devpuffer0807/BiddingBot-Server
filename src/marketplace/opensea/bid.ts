@@ -430,13 +430,13 @@ async function submitOfferToOpensea(privateKey: string, slug: string, bidCount: 
       }))
 
     const order_hash = offer.order_hash
-    const trait = offer.criteria.trait?.type
-      && offer.criteria.trait?.value
+    const trait = offer?.criteria?.trait?.type
+      && offer?.criteria?.trait?.value
       ? `trait:${offer.criteria.trait?.type}:${offer.criteria.trait?.value}`
       : "default"
 
 
-    const slug = offer.criteria.collection.slug
+    const slug = offer?.criteria?.collection?.slug
     const baseKey = `opensea:order:${slug}:${trait}`;
     const key = `${bidCount}:${baseKey}`;
     await redis.setex(key, expiry, order_hash);
@@ -446,7 +446,7 @@ async function submitOfferToOpensea(privateKey: string, slug: string, bidCount: 
       : `🎉 COLLECTION OFFER POSTED TO OPENSEA SUCCESSFULLY FOR: ${payload.criteria.collection.slug.toUpperCase()} 🎉`
     console.log(BLUE, successMessage, RESET);
 
-    task = currentTasks.find((task) => task.contract.slug.toLowerCase() === slug.toLowerCase() && task.selectedMarketplaces.includes("OpenSea"))
+    task = currentTasks.find((task) => task?.contract?.slug.toLowerCase() === slug?.toLowerCase() && task?.selectedMarketplaces.includes("OpenSea"))
     if (!task?.running) {
       await new Promise(resolve => setTimeout(resolve, 500));
       await cancelOrder(order_hash, OPENSEA_PROTOCOL_ADDRESS, privateKey)

@@ -68,7 +68,7 @@ export async function getWethBalance(address: string): Promise<number> {
         }
       ));
 
-      const balance = Number(data.data.wallet.wrappedCurrencyFunds.quantity);
+      const balance = Number(data?.data?.wallet?.wrappedCurrencyFunds?.quantity)||0;
 
       await redis.set(cacheKey, balance.toString(), 'EX', 60);
 
