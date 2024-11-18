@@ -51,8 +51,8 @@ const COLLECTION_BID_PRIORITY = {
   MAGICEDEN: 11,
   BLUR: 12
 };
-
 config()
+
 export const MAGENTA = '\x1b[35m';
 export const BLUE = '\x1b[34m';
 export const RESET = '\x1b[0m';
@@ -176,6 +176,10 @@ const worker = new Worker(
     limiter: {
       max: RATE_LIMIT,
       duration: 1000
+    },
+    // Add memory management options
+    settings: {
+
     }
   }
 );
@@ -523,6 +527,7 @@ const taskAbortControllers = new Map<string, AbortController>();
 
 async function stopTask(task: ITask, start: boolean, marketplace?: string) {
   const taskId = task._id.toString();
+  const STOP_TIMEOUT = 120000; // Increase timeout to 2 minutes
 
   // Create new abort controller for this task
   const abortController = new AbortController();
@@ -531,29 +536,59 @@ async function stopTask(task: ITask, start: boolean, marketplace?: string) {
   try {
     await updateTaskStatus(task, start, marketplace);
 
-    // Pass abort signal to all cleanup operations
-    await Promise.race([
-      Promise.all([
-        removePendingAndWaitingBids(task, marketplace),
-        waitForRunningJobsToComplete(task, marketplace),
-        cancelAllRelatedBids(task, marketplace)
-      ]),
-      // Add timeout to prevent hanging
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('Task stop timeout')), 30000)
-      )
-    ]);
+    // Split cleanup into separate operations with individual timeouts
+    const cleanupOperations = [
+      {
+        name: 'Remove pending bids',
+        operation: () => removePendingAndWaitingBids(task, marketplace)
+      },
+      {
+        name: 'Wait for running jobs',
+        operation: () => waitForRunningJobsToComplete(task, marketplace)
+      },
+      {
+        name: 'Cancel related bids',
+        operation: () => cancelAllRelatedBids(task, marketplace)
+      }
+    ];
 
-    if (task.outbidOptions.counterbid) {
-      await unsubscribeFromCollection(task);
+    for (const { name, operation } of cleanupOperations) {
+      try {
+        await Promise.race([
+          operation(),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error(`${name} timeout`)), STOP_TIMEOUT)
+          )
+        ]);
+      } catch (error) {
+        console.error(RED + `Error during ${name.toLowerCase()} for task ${task.contract.slug}:` + RESET, error);
+        // Continue with next operation even if current one fails
+      }
     }
 
-    // Verify no residual bids remain
+    if (task.outbidOptions.counterbid) {
+      try {
+        await unsubscribeFromCollection(task);
+      } catch (error) {
+        console.error(RED + `Error unsubscribing from collection for task ${task.contract.slug}:` + RESET, error);
+      }
+    }
+
+    // Final verification of residual bids
     const residualBids = await checkForResidualBids(task, marketplace);
     if (residualBids.length > 0) {
       console.warn(YELLOW + `Found ${residualBids.length} residual bids after stopping task` + RESET);
-      // Attempt one final cleanup
-      await cancelAllRelatedBids(task, marketplace);
+      // Attempt one final cleanup with a shorter timeout
+      try {
+        await Promise.race([
+          cancelAllRelatedBids(task, marketplace),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('Final cleanup timeout')), 30000)
+          )
+        ]);
+      } catch (error) {
+        console.error(RED + `Error during final cleanup for task ${task.contract.slug}:` + RESET, error);
+      }
     }
 
   } catch (error) {
@@ -1918,7 +1953,7 @@ async function processOpenseaScheduledBid(task: ITask) {
         const bidPrice = !highestBids ? Number(offerPrice) : highestBids + outbidMargin
         offerPrice = BigInt(Math.ceil(bidPrice))
       }
-      if (maxBidPriceEth > 0 && Number(offerPrice) / 1e18 > maxBidPriceEth) {
+      if (task.outbidOptions.outbid && maxBidPriceEth > 0 && Number(offerPrice) / 1e18 > maxBidPriceEth) {
 
         console.log(RED + '--------------------------------------------------------------------------------------------------' + RESET);
         console.log(RED + `Offer price ${Number(offerPrice) / 1e18} ETH for ${task.contract.slug} exceeds max bid price ${maxBidPriceEth} ETH FOR OPENSEA. Skipping ...`.toUpperCase() + RESET);
@@ -2008,7 +2043,7 @@ async function processBlurScheduledBid(task: ITask) {
         offerPrice = BigInt(Math.ceil(Number(bidPrice) * 1e18))
       }
 
-      if (maxBidPriceEth > 0 && Number(offerPrice) / 1e18 > maxBidPriceEth) {
+      if (task.outbidOptions.outbid && maxBidPriceEth > 0 && Number(offerPrice) / 1e18 > maxBidPriceEth) {
         console.log(RED + '--------------------------------------------------------------------------------------------------' + RESET);
         console.log(RED + `Offer price ${Number(offerPrice) / 1e18} ETH for ${task.contract.slug} exceeds max bid price ${maxBidPriceEth} ETH FOR BLUR. Skipping ...`.toUpperCase() + RESET);
         console.log(RED + '--------------------------------------------------------------------------------------------------' + RESET);
@@ -2057,7 +2092,7 @@ async function processOpenseaTraitBid(data: {
       colletionOffer = BigInt(bidPrice)
     }
 
-    if (maxBidPriceEth > 0 && Number(colletionOffer) / 1e18 > maxBidPriceEth) {
+    if (outbidOptions.outbid && maxBidPriceEth > 0 && Number(colletionOffer) / 1e18 > maxBidPriceEth) {
       console.log(RED + '-----------------------------------------------------------------------------------------------------------------------------------------' + RESET);
       console.log(RED + `Offer price ${Number(colletionOffer) / 1e18} ETH for ${slug} ${trait} exceeds max bid price ${maxBidPriceEth} ETH FOR OPENSEA. Skipping ...`.toUpperCase() + RESET);
       console.log(RED + '-----------------------------------------------------------------------------------------------------------------------------------------' + RESET);
@@ -2115,7 +2150,7 @@ async function processOpenseaTokenBid(data: {
       colletionOffer = BigInt(bidPrice.toString())
     }
 
-    if (maxBidPriceEth > 0 && Number(colletionOffer) / 1e18 > maxBidPriceEth) {
+    if (outbidOptions.outbid && maxBidPriceEth > 0 && Number(colletionOffer) / 1e18 > maxBidPriceEth) {
       console.log(RED + '--------------------------------------------------------------------------------------------------' + RESET);
       console.log(RED + `Offer price ${Number(colletionOffer) / 1e18} ETH for ${slug} ${asset.tokenId} exceeds max bid price ${maxBidPriceEth} ETH FOR OPENSEA. Skipping ...`.toUpperCase() + RESET);
       console.log(RED + '--------------------------------------------------------------------------------------------------' + RESET);
@@ -2175,7 +2210,7 @@ async function processBlurTraitBid(data: {
     }
 
     const offerPriceEth = Number(collectionOffer) / 1e18;
-    if (maxBidPriceEth > 0 && offerPriceEth > maxBidPriceEth) {
+    if (outbidOptions.outbid && maxBidPriceEth > 0 && offerPriceEth > maxBidPriceEth) {
       console.log(RED + '--------------------------------------------------------------------------------------------------' + RESET);
       console.log(RED + `Offer price ${offerPriceEth} ETH for ${slug} ${JSON.stringify(trait)} exceeds max bid price ${maxBidPriceEth} ETH. Skipping ...`.toUpperCase() + RESET);
       console.log(RED + '--------------------------------------------------------------------------------------------------' + RESET);
@@ -2294,7 +2329,7 @@ async function processMagicedenScheduledBid(task: ITask) {
           console.error(RED + `No valid offer received for collection: ${task.contract.slug}` + RESET);
         }
       }
-      if (maxBidPriceEth > 0 && Number(offerPrice) / 1e18 > maxBidPriceEth) {
+      if (task.outbidOptions.outbid && maxBidPriceEth > 0 && Number(offerPrice) / 1e18 > maxBidPriceEth) {
         console.log(RED + '--------------------------------------------------------------------------------------------------' + RESET);
         console.log(RED + `Offer price ${Number(offerPrice) / 1e18} ETH for ${task.contract.slug} exceeds max bid price ${maxBidPriceEth} ETH FOR MAGICEDEN. Skipping ...`.toUpperCase() + RESET);
         console.log(RED + '--------------------------------------------------------------------------------------------------' + RESET);
@@ -2358,7 +2393,7 @@ async function processMagicedenTokenBid(data: {
       }
     }
 
-    if (maxBidPriceEth > 0 && Number(collectionOffer / 1e18) > maxBidPriceEth) {
+    if (outbidOptions.outbid && maxBidPriceEth > 0 && Number(collectionOffer / 1e18) > maxBidPriceEth) {
       console.log(RED + '-----------------------------------------------------------------------------------------------------------' + RESET);
       console.log(RED + `magiceden offer ${collectionOffer / 1e18} WETH for ${slug} ${tokenId}  exceeds max bid price ${maxBidPriceEth} WETH ON MAGICEDEN. Skipping ...`.toUpperCase() + RESET);
       console.log(RED + '-----------------------------------------------------------------------------------------------------------' + RESET);
