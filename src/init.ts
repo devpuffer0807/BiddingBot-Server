@@ -8,7 +8,7 @@ let API_KEY: string;
 let RATE_LIMIT: number = 64;
 
 async function fetchRateLimitFromDatabase() {
-  return { rateLimit: 64, apiKey: "d3348c68-097d-48b5-b5f0-0313cc05e92d" };
+  return { rateLimit: 64, apiKey: "d3348cw68-097d-48b5-b5f0-0313cc05e92d" };
 }
 
 const retryConfig: IAxiosRetryConfig = {
@@ -40,7 +40,7 @@ async function initialize() {
   const { rateLimit, apiKey } = await fetchRateLimitFromDatabase();
   limiter = new Bottleneck({
     minTime: 1000 / rateLimit,
-    priority: true // Enable priority queue
+    maxConcurrent: rateLimit
   });
   axiosRetry(axiosInstance, retryConfig);
   API_KEY = apiKey

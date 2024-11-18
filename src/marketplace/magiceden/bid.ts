@@ -3,7 +3,7 @@ import { axiosInstance, limiter } from "../../init";
 import { config } from "dotenv";
 import { currentTasks, MAGENTA } from "../..";
 import redisClient from "../../utils/redis";
-import { getWethBalance } from "../../utils/balance";
+import { createBalanceChecker } from "../../utils/balance";
 
 const RED = '\x1b[31m';
 const RESET = '\x1b[0m';
@@ -15,6 +15,13 @@ const ALCHEMY_API_KEY = "0rk2kbu11E5PDyaUqX1JjrNKwG7s4ty5"
 const provider = new ethers.providers.AlchemyProvider('mainnet', ALCHEMY_API_KEY);
 
 const redis = redisClient.getClient();
+
+const deps = {
+  redis: redis,
+  provider: new ethers.providers.AlchemyProvider("mainnet", ALCHEMY_API_KEY),
+};
+
+const balanceChecker = createBalanceChecker(deps);
 
 /**
  * Places a bid on Magic Eden.
@@ -39,36 +46,52 @@ export async function bidOnMagiceden(
   trait?: Trait,
   tokenId?: string | number
 ) {
-  const task = currentTasks.find((task) => task.contract.slug.toLowerCase() === slug.toLowerCase() && task.selectedMarketplaces.includes("MagicEden"))
-  if (!task?.running) return
+  try {
 
-  const bidExpiry = getExpiry(task.bidDuration)
-  const duration = bidExpiry / 60 || 15; // minutes
-  const currentTime = new Date().getTime();
-  const expiration = Math.floor((currentTime + (duration * 60 * 1000)) / 1000);
-  const expiry = Math.ceil(Number(expiration) - (Date.now() / 1000))
+    const task = currentTasks.find((task) => task.contract.slug.toLowerCase() === slug.toLowerCase() && task.selectedMarketplaces.includes("MagicEden"))
+    if (!task?.running) return
 
-  const wallet = new Wallet(privateKey, provider);
-  const offerPriceEth = Number(weiPrice) / 1e18
-  const wethBalance = await getWethBalance(maker)
+    const bidExpiry = await getExpiry(task.bidDuration)
+    const duration = bidExpiry / 60 || 15; // minutes
+    const currentTime = new Date().getTime();
+    const expiration = Math.floor((currentTime + (duration * 60 * 1000)) / 1000);
+    const expiry = Math.ceil(Number(expiration) - (Date.now() / 1000))
 
-  if (offerPriceEth > wethBalance) {
-    console.log(RED + '-----------------------------------------------------------------------------------------------------------' + RESET);
-    console.log(RED + `Offer price: ${offerPriceEth} WETH  is greater than available WETH balance: ${wethBalance} WETH. SKIPPING ...`.toUpperCase() + RESET);
-    console.log(RED + '-----------------------------------------------------------------------------------------------------------' + RESET);
-    return
+    const wallet = new Wallet(privateKey, provider);
+    const offerPriceEth = Number(weiPrice) / 1e18
+    const wethBalance = await balanceChecker.getWethBalance(maker);
+
+    if (offerPriceEth > wethBalance) {
+      console.log(RED + '-----------------------------------------------------------------------------------------------------------' + RESET);
+      console.log(RED + `Offer price: ${offerPriceEth} WETH  is greater than available WETH balance: ${wethBalance} WETH. SKIPPING ...`.toUpperCase() + RESET);
+      console.log(RED + '-----------------------------------------------------------------------------------------------------------' + RESET);
+      return
+    }
+
+    const order = await createBidData(slug, maker, collection, quantity, weiPrice.toString(), expiration.toString(), trait, tokenId);
+
+    if (!order) {
+      const details = tokenId ? `TOKEN: ${tokenId}` : trait ? `TRAIT: ${trait.attributeKey}=${trait.attributeValue}` : 'COLLECTION WIDE';
+      console.log(RED, `[MAGICEDEN] Failed to create bid for ${slug.toUpperCase()} - ${details}`.toUpperCase(), RESET);
+      return
+
+    }
+    try {
+      if (tokenId) {
+        await submitSignedOrderData(privateKey, bidCount, order, wallet, slug, expiry, undefined, tokenId)
+      } else if (trait) {
+        await submitSignedOrderData(privateKey, bidCount, order, wallet, slug, expiry, trait, undefined)
+      } else {
+        await submitSignedOrderData(privateKey, bidCount, order, wallet, slug, expiry, undefined, undefined)
+      }
+    } catch (error) {
+      console.error('Error submitting signed order:', error);
+    }
+    return order
+  } catch (error) {
+    console.error('Error in bidOnMagiceden:', error);
+    return null;
   }
-
-  const order = await createBidData(slug, maker, collection, quantity, weiPrice.toString(), expiration.toString(), trait, tokenId);
-
-  if (order) {
-    const res = await tokenId ?
-      submitSignedOrderData(privateKey, bidCount, order, wallet, slug, expiry, undefined, tokenId)
-      : trait ? submitSignedOrderData(privateKey, bidCount, order, wallet, slug, expiry, trait, undefined)
-        : submitSignedOrderData(privateKey, bidCount, order, wallet, slug, expiry, undefined, undefined)
-    return res
-  }
-  return order
 }
 
 /**
@@ -92,6 +115,14 @@ async function createBidData(
   tokenId?: number | string,
 ) {
 
+  const task = currentTasks.find((task) => task.contract.slug.toLowerCase() === slug.toLowerCase() && task.selectedMarketplaces.includes("MagicEden"))
+  if (!task?.running) return
+
+  const bidExpiry = await getExpiry(task.bidDuration)
+  const duration = bidExpiry / 60 || 15; // minutes
+  const currentTime = new Date().getTime();
+  const expiration = Math.floor((currentTime + (duration * 60 * 1000)) / 1000);
+
   const options = trait || tokenId ? {
     "seaport-v1.6": {
       "useOffChainCancellation": true,
@@ -111,7 +142,7 @@ async function createBidData(
       currency: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
       quantity: quantity,
       weiPrice: weiPrice.toString(),
-      expirationTime: expirationTime,
+      expirationTime: expiration.toString(),
       orderKind: orderKind,
       orderbook: "reservoir",
       options: options,
@@ -126,16 +157,18 @@ async function createBidData(
     params: params
   };
 
-  const task = currentTasks.find((task) => task.contract.slug.toLowerCase() === slug.toLowerCase() && task.selectedMarketplaces.includes("MagicEden"))
-  if (!task?.running) return
 
   try {
-    const { data: order } = await limiter.schedule({ priority: 5 }, () => axiosInstance.post<CreateBidData>('https://api.nfttools.website/magiceden/v3/rtp/ethereum/execute/bid/v5', data, {
-      headers: {
-        'content-type': 'application/json',
-        'X-NFT-API-Key': API_KEY
+    const { data: order } = await limiter.schedule(() => axiosInstance.post<CreateBidData>(
+      'https://api.nfttools.website/magiceden/v3/rtp/ethereum/execute/bid/v5',
+      data,
+      {
+        headers: {
+          'content-type': 'application/json',
+          'X-NFT-API-Key': API_KEY
+        }
       }
-    }));
+    ));
     return order;
   } catch (error: any) {
     console.log(error?.response?.data || JSON.stringify(error));
@@ -149,52 +182,52 @@ async function createBidData(
  * @returns The signature.
  */
 async function signOrderData(wallet: ethers.Wallet, signData: any, trait?: Trait): Promise<string> {
-  const domain = trait ? {
-    "name": "Seaport",
-    "version": "1.6",
-    "chainId": 1,
-    "verifyingContract": "0x0000000000000068f116a894984e2db1123eb395"
-  } : signData.domain
-
-  const types = trait ? {
-    "OrderComponents": [
-      { "name": "offerer", "type": "address" },
-      { "name": "zone", "type": "address" },
-      { "name": "offer", "type": "OfferItem[]" },
-      { "name": "consideration", "type": "ConsiderationItem[]" },
-      { "name": "orderType", "type": "uint8" },
-      { "name": "startTime", "type": "uint256" },
-      { "name": "endTime", "type": "uint256" },
-      { "name": "zoneHash", "type": "bytes32" },
-      { "name": "salt", "type": "uint256" },
-      { "name": "conduitKey", "type": "bytes32" },
-      { "name": "counter", "type": "uint256" }
-    ],
-    "OfferItem": [
-      { "name": "itemType", "type": "uint8" },
-      { "name": "token", "type": "address" },
-      { "name": "identifierOrCriteria", "type": "uint256" },
-      { "name": "startAmount", "type": "uint256" },
-      { "name": "endAmount", "type": "uint256" }
-    ],
-    "ConsiderationItem": [
-      { "name": "itemType", "type": "uint8" },
-      { "name": "token", "type": "address" },
-      { "name": "identifierOrCriteria", "type": "uint256" },
-      { "name": "startAmount", "type": "uint256" },
-      { "name": "endAmount", "type": "uint256" },
-      { "name": "recipient", "type": "address" }
-    ]
-  } : signData.types
   try {
+    const domain = trait ? {
+      "name": "Seaport",
+      "version": "1.6",
+      "chainId": 1,
+      "verifyingContract": "0x0000000000000068f116a894984e2db1123eb395"
+    } : signData.domain
+
+    const types = trait ? {
+      "OrderComponents": [
+        { "name": "offerer", "type": "address" },
+        { "name": "zone", "type": "address" },
+        { "name": "offer", "type": "OfferItem[]" },
+        { "name": "consideration", "type": "ConsiderationItem[]" },
+        { "name": "orderType", "type": "uint8" },
+        { "name": "startTime", "type": "uint256" },
+        { "name": "endTime", "type": "uint256" },
+        { "name": "zoneHash", "type": "bytes32" },
+        { "name": "salt", "type": "uint256" },
+        { "name": "conduitKey", "type": "bytes32" },
+        { "name": "counter", "type": "uint256" }
+      ],
+      "OfferItem": [
+        { "name": "itemType", "type": "uint8" },
+        { "name": "token", "type": "address" },
+        { "name": "identifierOrCriteria", "type": "uint256" },
+        { "name": "startAmount", "type": "uint256" },
+        { "name": "endAmount", "type": "uint256" }
+      ],
+      "ConsiderationItem": [
+        { "name": "itemType", "type": "uint8" },
+        { "name": "token", "type": "address" },
+        { "name": "identifierOrCriteria", "type": "uint256" },
+        { "name": "startAmount", "type": "uint256" },
+        { "name": "endAmount", "type": "uint256" },
+        { "name": "recipient", "type": "address" }
+      ]
+    } : signData.types
     const signature = await wallet._signTypedData(
       domain,
       types,
       signData.value
     );
     return signature;
-  } catch (error: any) {
-    console.error('Error signing data:', error.message);
+  } catch (error) {
+    console.error('Error in signOrderData:', error);
     throw error;
   }
 }
@@ -205,111 +238,86 @@ async function signOrderData(wallet: ethers.Wallet, signData: any, trait?: Trait
  * @param data - The order data.
  * @param slug - Collection slug
 * @param expiry - bid expiry in seconds
+* 
+* 
 * @param trait - Collection trait
  * @returns The response from the API.
  */
 async function sendSignedOrderData(privateKey: string, bidCount: number, signature: string, data: any, slug: string, expiry: number = 900, trait?: Trait, tokenId?: number | string) {
-  const task = currentTasks.find((task) => task.contract.slug.toLowerCase() === slug.toLowerCase() && task.selectedMarketplaces.includes("MagicEden"))
-  if (!task?.running) return
-
-  const endpoint = trait || tokenId
-    ? "https://api.nfttools.website/magiceden/v3/rtp/ethereum/order/v3"
-    : "https://api.nfttools.website/magiceden/v3/rtp/ethereum/order/v4"
-
   try {
-    const { data: offerResponse } = await limiter.schedule({ priority: 5 }, () =>
-      axiosInstance.post(
-        `${endpoint}?signature=${encodeURIComponent(signature)}`,
-        data,
-        {
-          headers: {
-            'content-type': 'application/json',
-            'X-NFT-API-Key': API_KEY,
+    const task = await currentTasks.find((task) =>
+      task.contract.slug.toLowerCase() === slug.toLowerCase() &&
+      task.selectedMarketplaces.includes("MagicEden")
+    )
+    if (!task?.running) return
+
+    const endpoint = trait || tokenId
+      ? "https://api.nfttools.website/magiceden/v3/rtp/ethereum/order/v3"
+      : "https://api.nfttools.website/magiceden/v3/rtp/ethereum/order/v4"
+
+    try {
+      const { data: offerResponse } = await limiter.schedule(() =>
+        axiosInstance.post(
+          `${endpoint}?signature=${encodeURIComponent(signature)}`,
+          data,
+          {
+            headers: {
+              'content-type': 'application/json',
+              'X-NFT-API-Key': API_KEY,
+            }
           }
-        }
-      )
-    );
-    const successMessage = tokenId ? `🎉 TOKEN OFFER POSTED TO MAGICEDEN SUCCESSFULLY FOR: ${slug.toUpperCase()} TOKEN: ${tokenId} 🎉` :
-      trait ?
-        `🎉 TRAIT OFFER POSTED TO MAGICEDEN SUCCESSFULLY FOR: ${slug.toUpperCase()} TRAIT: ${JSON.stringify(trait)} 🎉`
-        : `🎉 OFFER POSTED TO MAGICEDEN SUCCESSFULLY FOR: ${slug.toUpperCase()} 🎉`
-
-    const orderKey =
-      tokenId ?
-        `${JSON.stringify(tokenId)}` :
-        trait
-          ? `${JSON.stringify(trait)}`
-          : "default"
-
-    const baseKey = `magiceden:order:${slug}:${orderKey}`;
-    const order = JSON.stringify(offerResponse);
-
-    const key = `${bidCount}:${baseKey}`;
-    await redis.setex(key, expiry, order);
-
-    console.log(MAGENTA, successMessage, RESET);
-    const task = currentTasks.find((task) => task.contract.slug.toLowerCase() === slug.toLowerCase() && task.selectedMarketplaces.includes("MagicEden"))
-    if (!task?.running) {
-      await cancelMagicEdenBid([order], privateKey)
-    }
-    return offerResponse;
-  } catch (error: any) {
-    // Enhanced error logging
-    const errorMessage = error?.response?.data?.message?.message ||
-      error?.response?.data?.message ||
-      error?.message ||
-      'Unknown error';
-
-    if (errorMessage.includes("Invalid marketplace fee")) {
-      const fee = +data.order.data.offer[0].startAmount * 0.02;
-      const address = extractAddress(error?.response?.data?.message?.message);
-
-      const considerations = data.order.data.consideration;
-      const marketplaceFeeIndex = considerations.findIndex((item: any) =>
-        item.itemType === 1
-        && item.token.toLowerCase() === "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2".toLowerCase()
-        && +item.identifierOrCriteria === 0,
+        )
       );
+      const successMessage = tokenId ? `🎉 TOKEN OFFER POSTED TO MAGICEDEN SUCCESSFULLY FOR: ${slug.toUpperCase()} TOKEN: ${tokenId} 🎉` :
+        trait ?
+          `🎉 TRAIT OFFER POSTED TO MAGICEDEN SUCCESSFULLY FOR: ${slug.toUpperCase()} TRAIT: ${JSON.stringify(trait)} 🎉`
+          : `🎉 OFFER POSTED TO MAGICEDEN SUCCESSFULLY FOR: ${slug.toUpperCase()} 🎉`
 
-      if (marketplaceFeeIndex !== -1) {
-        considerations[marketplaceFeeIndex] = {
-          "itemType": 1,
-          "token": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
-          "identifierOrCriteria": "0",
-          "startAmount": fee.toString(),
-          "endAmount": fee.toString(),
-          "recipient": address || considerations[marketplaceFeeIndex].recipient
-        };
+      const orderKey =
+        tokenId ?
+          `${JSON.stringify(tokenId)}` :
+          trait
+            ? `${JSON.stringify(trait)}`
+            : "default"
+
+      const baseKey = `magiceden:order:${slug}:${orderKey}`;
+      const order = JSON.stringify(offerResponse);
+      const task = currentTasks.find((task) => task.contract.slug.toLowerCase() === slug.toLowerCase() && task.selectedMarketplaces.includes("MagicEden"))
+
+      if (!task?.running) {
+        return await cancelMagicEdenBid([order], privateKey)
       }
+      const key = `${bidCount}:${baseKey}`;
+      const bidExpiry = await getExpiry(task.bidDuration)
+      const duration = bidExpiry / 60 || 15; // minutes
+      const currentTime = new Date().getTime();
+      const expiration = Math.floor((currentTime + (duration * 60 * 1000)) / 1000);
+      const expiry = Math.ceil(Number(expiration) - (Date.now() / 1000))
 
-      // Resign the order after updating the marketplace fee
-      const signData = data?.steps
-        ?.find((step: any) => step.id === "order-signature")
-        ?.items?.[0]?.data?.sign;
+      await redis.setex(key, expiry, order);
 
-      if (signData && signData.value) {
-        const wallet = new Wallet(privateKey, provider);
-        const signature = await signOrderData(wallet, signData, trait);
-        await sendSignedOrderData(privateKey, bidCount, signature, data, slug, expiry, trait, tokenId);
+      console.log(MAGENTA, successMessage, RESET);
+      if (!task?.running) {
+        await cancelMagicEdenBid([order], privateKey)
       }
-    } else {
-      console.error('Magic Eden API Error:', {
-        endpoint,
-        errorMessage,
-        statusCode: error?.response?.status,
-        details: error?.response?.data,
-        tokenId: tokenId ? `Token ID: ${tokenId}` : undefined,
-        trait: trait ? `Trait: ${JSON.stringify(trait)}` : undefined,
-        collection: slug
-      });
+      return offerResponse;
+    } catch (error: any) {
+      console.error('Error saving to Redis:', error.response.data);
     }
+  } catch (error: any) {
+    console.error('Error in sendSignedOrderData:', error.response.data);
     return null;
   }
 }
 
 const extractAddress = (message: string): string | null => {
-  const match = message.match(/Expected: (0x[a-fA-F0-9]{40})/);
-  return match ? match[1] : null;
+  try {
+    const match = message.match(/Expected: (0x[a-fA-F0-9]{40})/);
+    return match ? match[1] : null;
+  } catch (error) {
+    console.error('Error extracting address:', error);
+    return null;
+  }
 }
 
 /**
@@ -418,7 +426,7 @@ export async function cancelMagicEdenBid(orderIds: string[], privateKey: string)
       }
     });
     if (!processedOrderIds.length) return
-    const { data } = await limiter.schedule({ priority: 1 }, () => axiosInstance.post<MagicEdenCancelOfferCancel>(
+    const { data } = await limiter.schedule(() => axiosInstance.post<MagicEdenCancelOfferCancel>(
       'https://api.nfttools.website/magiceden/v3/rtp/ethereum/execute/cancel/v3',
       { orderIds: processedOrderIds },
       {
@@ -452,12 +460,16 @@ export async function cancelMagicEdenBid(orderIds: string[], privateKey: string)
       orderKind: 'payment-processor-v2'
     }
 
-    const { data: cancelResponse } = await limiter.schedule({ priority: 1 }, () => axiosInstance.post(`https://api.nfttools.website/magiceden/v3/rtp/ethereum/execute/cancel-signature/v1?signature=${signature}`, cancelBody, {
-      headers: {
-        'content-type': 'application/json',
-        'X-NFT-API-Key': API_KEY
+    const { data: cancelResponse } = await limiter.schedule(() => axiosInstance.post(
+      `https://api.nfttools.website/magiceden/v3/rtp/ethereum/execute/cancel-signature/v1?signature=${signature}`,
+      cancelBody,
+      {
+        headers: {
+          'content-type': 'application/json',
+          'X-NFT-API-Key': API_KEY
+        }
       }
-    }))
+    ))
 
     console.log(JSON.stringify(cancelResponse));
   } catch (error: any) {
@@ -500,7 +512,7 @@ export async function fetchMagicEdenOffer(type: "COLLECTION" | "TRAIT" | "TOKEN"
         normalizeRoyalties: 'false'
       }
 
-      const { data } = await limiter.schedule({ priority: 2 }, () =>
+      const { data } = await limiter.schedule(() =>
         axiosInstance.get(URL, {
           params: queryParams,
           headers: {
@@ -522,7 +534,7 @@ export async function fetchMagicEdenOffer(type: "COLLECTION" | "TRAIT" | "TOKEN"
         limit: '100',
         normalizeRoyalties: 'false'
       };
-      const { data } = await limiter.schedule({ priority: 2 }, () =>
+      const { data } = await limiter.schedule(() =>
         axiosInstance.get(URL, {
           params: queryParams,
           headers: {
@@ -547,12 +559,15 @@ export async function fetchMagicEdenCollectionStats(contractAddress: string) {
     collectionId: contractAddress
   };
   try {
-    const { data } = await limiter.schedule({ priority: 2 }, () => axiosInstance.get('https://api.nfttools.website/magiceden_stats/collection_stats/stats', {
-      params: queryParams,
-      headers: {
-        'X-NFT-API-Key': API_KEY
+    const { data } = await limiter.schedule(() => axiosInstance.get(
+      'https://api.nfttools.website/magiceden_stats/collection_stats/stats',
+      {
+        params: queryParams,
+        headers: {
+          'X-NFT-API-Key': API_KEY
+        }
       }
-    }));
+    ));
 
     return +data.floorPrice.amount
   } catch (error) {
@@ -581,13 +596,16 @@ export async function fetchMagicEdenTokens(collectionId: string, limit?: number)
     if (!limit) return
     do {
 
-      const { data } = await limiter.schedule({ priority: 2 }, () => axiosInstance.get<TokenResponseMagiceden>(url, {
-        headers: {
-          accept: "application/json",
-          "X-NFT-API-Key": API_KEY,
-        },
-        params
-      }))
+      const { data } = await limiter.schedule(() => axiosInstance.get<TokenResponseMagiceden>(
+        url,
+        {
+          headers: {
+            accept: "application/json",
+            "X-NFT-API-Key": API_KEY,
+          },
+          params
+        }
+      ))
 
       const tokens = data.tokens.map((item) => +item.token.tokenId);
       allTokens.push(...tokens);
@@ -607,15 +625,20 @@ export async function fetchMagicEdenTokens(collectionId: string, limit?: number)
 
 
 function getExpiry(bidDuration: { value: number; unit: string }) {
-  const expiry = bidDuration.unit === 'minutes'
-    ? bidDuration.value * 60
-    : bidDuration.unit === 'hours'
-      ? bidDuration.value * 3600
-      : bidDuration.unit === 'days'
-        ? bidDuration.value * 86400
-        : 900;
+  try {
+    const expiry = bidDuration.unit === 'minutes'
+      ? bidDuration.value * 60
+      : bidDuration.unit === 'hours'
+        ? bidDuration.value * 3600
+        : bidDuration.unit === 'days'
+          ? bidDuration.value * 86400
+          : 900;
 
-  return expiry
+    return expiry;
+  } catch (error) {
+    console.error('Error calculating expiry:', error);
+    return 900; // Default to 15 minutes
+  }
 }
 
 interface TokenMagiceden {

@@ -1,10 +1,10 @@
 import { BigNumber, Contract, ethers, Wallet } from "ethers";
 import { SEAPORT_CONTRACT_ADDRESS, SEAPORT_MIN_ABI, WETH_MIN_ABI } from "../../constants";
 import { axiosInstance, limiter } from "../../init";
-import { BLUE, currentTasks } from "../..";
+import { BLUE, currentTasks, OPENSEA_SCHEDULE, OPENSEA_TOKEN_BID, OPENSEA_TRAIT_BID, queue } from "../..";
 import redisClient from "../../utils/redis";
 import { config } from "dotenv";
-import { getWethBalance } from "../../utils/balance";
+import { createBalanceChecker } from "../../utils/balance";
 
 config()
 
@@ -130,6 +130,14 @@ const types = {
 };
 
 
+const deps = {
+  redis: redis,
+  provider: new ethers.providers.AlchemyProvider("mainnet", ALCHEMY_API_KEY),
+};
+
+const balanceChecker = createBalanceChecker(deps);
+
+
 async function buildItemOffer(offerSpecification: ItemOfferSpecification) {
   try {
     const {
@@ -204,7 +212,7 @@ export async function bidOnOpensea(
   const offerPrice = BigNumber.from(roundedNumber.toString());
 
   const offerPriceEth = Number(offer_price) / 1e18
-  const wethBalance = await getWethBalance(wallet_address)
+  const wethBalance = await balanceChecker.getWethBalance(wallet_address);
 
   const pattern = `*:opensea:${slug}:*`
   const keys = await redis.keys(pattern)
@@ -221,6 +229,18 @@ export async function bidOnOpensea(
     console.log(RED + '-----------------------------------------------------------------------------------------------------------' + RESET);
     console.log(RED + `Total offers (${totalOffersWithNew} WETH) would exceed 1000x available BETH balance (${wethBalance * 1000} WETH). SKIPPING ...`.toUpperCase() + RESET);
     console.log(RED + '-----------------------------------------------------------------------------------------------------------' + RESET);
+
+    // Remove all OpenSea jobs from the queue
+    const jobs = await queue.getJobs(['waiting', 'delayed', 'failed', 'paused', 'prioritized', 'repeat', 'wait', 'waiting', 'waiting-children']);
+    const openseaJobs = jobs.filter(job =>
+      [OPENSEA_SCHEDULE, OPENSEA_TRAIT_BID, OPENSEA_TOKEN_BID].includes(job.name)
+    );
+
+    if (openseaJobs.length > 0) {
+      await Promise.all(openseaJobs.map(job => job.remove()));
+      console.log(RED + `Removed ${openseaJobs.length} OpenSea jobs from queue due to insufficient WETH balance` + RESET);
+    }
+
     return
   }
 
@@ -419,7 +439,7 @@ async function submitOfferToOpensea(privateKey: string, slug: string, bidCount: 
   if (!task?.running) return
   try {
     const { data: offer } = await
-      limiter.schedule({ priority: 5 }, () => axiosInstance.request<OpenseaOffer>({
+      limiter.schedule(() => axiosInstance.request<OpenseaOffer>({
         method: 'POST',
         url: `https://api.nfttools.website/opensea/api/v2/offers`,
         headers: {
@@ -463,7 +483,7 @@ async function submitOfferToOpensea(privateKey: string, slug: string, bidCount: 
  */
 async function buildOffer(buildPayload: any) {
   try {
-    const { data } = await limiter.schedule({ priority: 5 }, () =>
+    const { data } = await limiter.schedule(() =>
       axiosInstance.request<PartialParameters>({
         method: 'POST',
         url: `https://api.nfttools.website/opensea/api/v2/offers/build`,
@@ -501,7 +521,7 @@ export async function cancelOrder(orderHash: string, protocolAddress: string, pr
   };
 
   try {
-    const response = await limiter.schedule({ priority: 1 }, () => axiosInstance.post(url, body, { headers }))
+    const response = await limiter.schedule(() => axiosInstance.post(url, body, { headers }))
     console.log(JSON.stringify({ cancelled: true }));
     return response.data;
   } catch (error: any) {
@@ -563,7 +583,7 @@ async function postItemOffer(offer: unknown, signature: string) {
       protocol_address: SEAPORT_CONTRACT_ADDRESS,
     }
 
-    const { data } = await limiter.schedule({ priority: 5 }, () => axiosInstance.post(`https://api.nfttools.website/opensea/api/v2/orders/ethereum/seaport/offers`, payload, {
+    const { data } = await limiter.schedule(() => axiosInstance.post(`https://api.nfttools.website/opensea/api/v2/orders/ethereum/seaport/offers`, payload, {
       headers: {
         'content-type': 'application/json',
         'X-NFT-API-Key': API_KEY
@@ -620,7 +640,7 @@ export async function fetchOpenseaOffers(
   try {
     if (offerType === 'COLLECTION') {
       const url = `https://api.nfttools.website/opensea/api/v2/offers/collection/${collectionSlug}`;
-      const { data } = await limiter.schedule({ priority: 2 }, () => axiosInstance.get(url, {
+      const { data } = await limiter.schedule(() => axiosInstance.get(url, {
         headers: {
           'accept': 'application/json',
           'X-NFT-API-Key': API_KEY
@@ -640,7 +660,7 @@ export async function fetchOpenseaOffers(
     } else if (offerType === 'TRAIT') {
       const { type, value } = identifiers as Record<string, string>;
       const url = `https://api.nfttools.website/opensea/api/v2/offers/collection/${collectionSlug}/traits`;
-      const { data } = await limiter.schedule({ priority: 2 }, () => axiosInstance.get(url, {
+      const { data } = await limiter.schedule(() => axiosInstance.get(url, {
         headers: {
           'accept': 'application/json',
           'X-NFT-API-Key': API_KEY
@@ -654,7 +674,7 @@ export async function fetchOpenseaOffers(
     } else if (offerType === 'TOKEN') {
       const token = identifiers as string;
       const url = `https://api.nfttools.website/opensea/api/v2/offers/collection/${collectionSlug}/nfts/${token}/best`;
-      const { data } = await limiter.schedule({ priority: 2 }, () => axiosInstance.get(url, {
+      const { data } = await limiter.schedule(() => axiosInstance.get(url, {
         headers: {
           'accept': 'application/json',
           'X-NFT-API-Key': API_KEY
@@ -688,7 +708,7 @@ export async function fetchOpenseaListings(collectionSlug: string, limit?: numbe
         next: nextCursor,
         limit: Math.min(100, limit - allListings.length)
       }
-      const { data } = await limiter.schedule({ priority: 2 }, () => axiosInstance.get<OpenseaListingData>(baseUrl, {
+      const { data } = await limiter.schedule(() => axiosInstance.get<OpenseaListingData>(baseUrl, {
         headers: {
           'accept': 'application/json',
           'X-NFT-API-Key': API_KEY
