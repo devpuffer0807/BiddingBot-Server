@@ -140,8 +140,14 @@ class BalanceChecker {
         }
 
         const balance = this.extractBalanceFromResponse(responseData);
+        if (balance === 0) {
+          return 0;
+        }
         await this.setCachedBalance(cacheKey, balance);
         return balance;
+      } catch (error) {
+        console.error("Error in WETH balance fetch:", error);
+        return 0;
       } finally {
         this.lockManager.releaseLock(address, 'weth');
       }

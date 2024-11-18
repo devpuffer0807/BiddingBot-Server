@@ -1,6 +1,6 @@
 import { BigNumber, Contract, ethers, Wallet } from "ethers";
 import { SEAPORT_CONTRACT_ADDRESS, SEAPORT_MIN_ABI, WETH_MIN_ABI } from "../../constants";
-import { axiosInstance, limiter } from "../../init";
+import { axiosInstance, limiter, RATE_LIMIT } from "../../init";
 import { BLUE, currentTasks, OPENSEA_SCHEDULE, OPENSEA_TOKEN_BID, OPENSEA_TRAIT_BID, queue } from "../..";
 import redisClient from "../../utils/redis";
 import { config } from "dotenv";
@@ -213,10 +213,10 @@ export async function bidOnOpensea(
 
   const offerPriceEth = Number(offer_price) / 1e18
   const wethBalance = await balanceChecker.getWethBalance(wallet_address);
-
   const pattern = `*:opensea:${slug}:*`
   const keys = await redis.keys(pattern)
   let totalExistingOffers = 0
+  const bidLimit = 1000
 
   if (keys.length > 0) {
     const values = await redis.mget(keys)
@@ -225,7 +225,7 @@ export async function bidOnOpensea(
   }
 
   const totalOffersWithNew = totalExistingOffers / 1e18 + Number(offerPriceEth)
-  if (totalOffersWithNew > wethBalance * 1000) {
+  if (totalOffersWithNew > wethBalance * bidLimit) {
     console.log(RED + '-----------------------------------------------------------------------------------------------------------' + RESET);
     console.log(RED + `Total offers (${totalOffersWithNew} WETH) would exceed 1000x available BETH balance (${wethBalance * 1000} WETH). SKIPPING ...`.toUpperCase() + RESET);
     console.log(RED + '-----------------------------------------------------------------------------------------------------------' + RESET);
@@ -233,12 +233,16 @@ export async function bidOnOpensea(
     // Remove all OpenSea jobs from the queue
     const jobs = await queue.getJobs(['waiting', 'delayed', 'failed', 'paused', 'prioritized', 'repeat', 'wait', 'waiting', 'waiting-children']);
     const openseaJobs = jobs.filter(job =>
-      [OPENSEA_SCHEDULE, OPENSEA_TRAIT_BID, OPENSEA_TOKEN_BID].includes(job.name)
+      [OPENSEA_SCHEDULE, OPENSEA_TRAIT_BID, OPENSEA_TOKEN_BID].includes(job?.name) &&
+      !job?.lockKey // Only include jobs that aren't locked by a worker
     );
 
     if (openseaJobs.length > 0) {
-      await Promise.all(openseaJobs.map(job => job.remove()));
-      console.log(RED + `Removed ${openseaJobs.length} OpenSea jobs from queue due to insufficient WETH balance` + RESET);
+      const results = await Promise.allSettled(openseaJobs.map(job => job.remove()));
+      const removedCount = results.filter(result => result.status === 'fulfilled').length;
+      const failedCount = results.filter(result => result.status === 'rejected').length;
+
+      console.log(RED + `Removed ${removedCount} OpenSea jobs from queue due to insufficient WETH balance (${failedCount} failed)` + RESET);
     }
 
     return
@@ -472,7 +476,27 @@ async function submitOfferToOpensea(privateKey: string, slug: string, bidCount: 
       await cancelOrder(order_hash, OPENSEA_PROTOCOL_ADDRESS, privateKey)
     }
   } catch (error: any) {
-    console.log("opensea post offer error", error?.response?.data || error);
+    if (error?.response?.data?.message?.errors?.[0] === 'Outstanding order to wallet balance ratio exceeds allowed limit.' ||
+      error?.message?.errors?.[0] === 'Outstanding order to wallet balance ratio exceeds allowed limit.' ||
+      error?.response?.data?.message === 'Outstanding order to wallet balance ratio exceeds allowed limit.' ||
+      error?.message === 'Outstanding order to wallet balance ratio exceeds allowed limit.') {
+      // Remove all OpenSea jobs from the queue
+      const jobs = await queue.getJobs(['waiting', 'delayed', 'failed', 'paused', 'prioritized', 'repeat', 'wait', 'waiting', 'waiting-children']);
+      const openseaJobs = jobs.filter(job =>
+        [OPENSEA_SCHEDULE, OPENSEA_TRAIT_BID, OPENSEA_TOKEN_BID].includes(job?.name) &&
+        !job?.lockKey // Only include jobs that aren't locked by a worker
+      );
+
+      if (openseaJobs.length > 0) {
+        const results = await Promise.allSettled(openseaJobs.map(job => job.remove()));
+        const removedCount = results.filter(result => result.status === 'fulfilled').length;
+        const failedCount = results.filter(result => result.status === 'rejected').length;
+
+        console.log(RED + `Removed ${removedCount} OpenSea jobs from queue due to insufficient WETH balance (${failedCount} failed)` + RESET);
+      }
+    } else {
+      console.log("opensea post offer error", error?.response?.data || error?.message || error);
+    }
   }
 }
 
@@ -592,7 +616,27 @@ async function postItemOffer(offer: unknown, signature: string) {
 
     return data
   } catch (error: any) {
-    console.log(error.response.data);
+
+    if (error?.response?.data?.message?.errors?.[0] === 'Outstanding order to wallet balance ratio exceeds allowed limit.' ||
+      error?.message?.errors?.[0] === 'Outstanding order to wallet balance ratio exceeds allowed limit.' ||
+      error?.response?.data?.message === 'Outstanding order to wallet balance ratio exceeds allowed limit.' ||
+      error?.message === 'Outstanding order to wallet balance ratio exceeds allowed limit.') {
+      const jobs = await queue.getJobs(['waiting', 'delayed', 'failed', 'paused', 'prioritized', 'repeat', 'wait', 'waiting', 'waiting-children']);
+      const openseaJobs = jobs.filter(job =>
+        [OPENSEA_SCHEDULE, OPENSEA_TRAIT_BID, OPENSEA_TOKEN_BID].includes(job?.name) &&
+        !job?.lockKey
+      );
+
+      if (openseaJobs.length > 0) {
+        const results = await Promise.allSettled(openseaJobs.map(job => job.remove()));
+        const removedCount = results.filter(result => result.status === 'fulfilled').length;
+        const failedCount = results.filter(result => result.status === 'rejected').length;
+
+        console.log(RED + `Removed ${removedCount} OpenSea jobs from queue due to insufficient WETH balance (${failedCount} failed)` + RESET);
+      }
+    } else {
+      console.log("opensea post item offer error", error?.response?.data || error?.message || error);
+    }
   }
 }
 

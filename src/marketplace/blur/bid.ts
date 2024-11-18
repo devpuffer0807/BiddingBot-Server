@@ -1,5 +1,5 @@
 import { BigNumber, ethers, utils, Wallet } from "ethers";
-import { axiosInstance, limiter } from "../../init";
+import { axiosInstance, limiter, RATE_LIMIT } from "../../init";
 import redisClient from "../../utils/redis";
 import { BLUR_SCHEDULE, BLUR_TRAIT_BID, currentTasks, queue, RESET } from "../..";
 import { config } from "dotenv";
@@ -49,28 +49,33 @@ export async function bidOnBlur(
   const pattern = `*:blur:${slug}:*`
   const keys = await redis.keys(pattern)
   let totalExistingOffers = 0
-
   if (keys.length > 0) {
     const values = await redis.mget(keys)
     totalExistingOffers = values.reduce((sum, value) =>
       sum + (value ? Number(value) : 0), 0)
   }
+  const bidLimit = 200
 
   const totalOffersWithNew = totalExistingOffers / 1e18 + Number(offerPriceEth)
-  if (totalOffersWithNew > bethBalance * 200) {
+  if (totalOffersWithNew > bethBalance * bidLimit) {
     console.log(RED + '-----------------------------------------------------------------------------------------------------------' + RESET);
     console.log(RED + `Total offers (${totalOffersWithNew} BETH) would exceed 200x available BETH balance (${bethBalance * 200} BETH). SKIPPING ...`.toUpperCase() + RESET);
     console.log(RED + '-----------------------------------------------------------------------------------------------------------' + RESET);
 
-    // Remove all Blur jobs from the queue
+    //   // Remove all Blur jobs from the queue
     const jobs = await queue.getJobs(['waiting', 'delayed', 'failed', 'paused', 'prioritized', 'repeat', 'wait', 'waiting', 'waiting-children']);
     const blurJobs = jobs.filter(job =>
-      [BLUR_SCHEDULE, BLUR_TRAIT_BID].includes(job.name)
+      [BLUR_SCHEDULE, BLUR_TRAIT_BID].includes(job.name) &&
+      !job.lockKey // Only include jobs that aren't locked by a worker
     );
 
+
     if (blurJobs.length > 0) {
-      await Promise.all(blurJobs.map(job => job.remove()));
-      console.log(RED + `Removed ${blurJobs.length} OpenSea jobs from queue due to insufficient WETH balance` + RESET);
+      const results = await Promise.allSettled(blurJobs.map(job => job.remove()));
+      const removedCount = results.filter(result => result.status === 'fulfilled').length;
+      const failedCount = results.filter(result => result.status === 'rejected').length;
+
+      console.log(RED + `Removed ${removedCount} Blur jobs from queue due to insufficient BETH balance (${failedCount} failed)` + RESET);
     }
     return
   }
@@ -242,7 +247,14 @@ async function formatBidOnBlur(
     );
     return data;
   } catch (error: any) {
-    console.error("Error formatting bid " + `${JSON.stringify(buildPayload)}`, error.response?.data || error.message);
+
+    if (error.response?.data?.message === 'Balance over-utilized' || error.message?.message === 'Balance over-utilized') {
+      console.log(RED + '-----------------------------------------------------------------------------------------------------------' + RESET);
+      console.log(RED + 'BALANCE OVER-UTILIZED: BETH balance is being used in too many active orders' + RESET);
+      console.log(RED + '-----------------------------------------------------------------------------------------------------------' + RESET);
+      return;
+    }
+    // console.error("Error formatting bid " + `${JSON.stringify(buildPayload)}`, error.response?.data || error.message);
   }
 }
 
@@ -305,7 +317,23 @@ async function submitBidToBlur(
       await redis.setex(key, expiry, JSON.stringify(cancelPayload));
     }
   } catch (error: any) {
-    console.error("Error submitting bid:", error.response?.data || error.message);
+    if (error.response?.data?.message?.message === 'Balance over-utilized' || error.message.message === 'Balance over-utilized') {
+      const jobs = await queue.getJobs(['waiting', 'delayed', 'failed', 'paused', 'prioritized', 'repeat', 'wait', 'waiting', 'waiting-children']);
+      const blurJobs = jobs.filter(job =>
+        [BLUR_SCHEDULE, BLUR_TRAIT_BID].includes(job.name) &&
+        !job.lockKey // Only include jobs that aren't locked by a worker
+      );
+
+      if (blurJobs.length > 0) {
+        const results = await Promise.allSettled(blurJobs.map(job => job.remove()));
+        const removedCount = results.filter(result => result.status === 'fulfilled').length;
+        const failedCount = results.filter(result => result.status === 'rejected').length;
+
+        console.log(RED + `Removed ${removedCount} Blur jobs from queue due to insufficient BETH balance (${failedCount} failed)` + RESET);
+      }
+    } else {
+      console.error("Error submitting bid:", error.response?.data || error.message);
+    }
   }
 }
 
