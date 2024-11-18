@@ -16,13 +16,7 @@ import Wallet from "./models/wallet.model";
 import redisClient from "./utils/redis";
 import { WETH_CONTRACT_ADDRESS, WETH_MIN_ABI } from "./constants";
 import { constants, Contract, ethers, Wallet as Web3Wallet } from "ethers";
-import { BullMQOtel } from "bullmq-otel";
 import { AbortController } from 'node-abort-controller';
-import { NodeSDK } from '@opentelemetry/sdk-node';
-import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-proto';
-import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-proto';
-import { PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics';
-import os from 'os';
 
 const SEAPORT = '0x1e0049783f008a0085193e00003d00cd54003c71';
 const redis = redisClient.getClient()
@@ -263,20 +257,6 @@ async function fetchCurrentTasks() {
 
 const DOWNTIME_THRESHOLD = 30 * 60 * 1000;
 const LAST_RUNTIME_KEY = 'server:last_runtime';
-
-const sdk = new NodeSDK({
-  serviceName: 'bidding-bot',
-  traceExporter: new OTLPTraceExporter({
-    url: 'http://127.0.0.1:4318/v1/traces'
-  }),
-  metricReader: new PeriodicExportingMetricReader({
-    exporter: new OTLPMetricExporter({
-      url: 'http://127.0.0.1:4318/v1/metrics'
-    }),
-  }),
-});
-
-sdk.start();
 
 async function startServer() {
   try {

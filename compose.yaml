@@ -14,28 +14,7 @@ services:
       - "27017:27017"
     volumes:
       - mongodb_data:/data/db
-  jaeger:
-    image: jaegertracing/all-in-one:latest
-    container_name: BullMQ_with_opentelemetry_jaeger
-    ports:
-      - "4318:4318"
-      - "16686:16686"
-    networks:
-      - monitoring
-
-  prometheus:
-    image: prom/prometheus:latest
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml
-    networks:
-      - monitoring
 
 volumes:
   redis_data:
   mongodb_data:
-
-networks:
-  monitoring:
-    driver: bridge
