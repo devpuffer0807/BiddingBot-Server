@@ -4,14 +4,14 @@ import bodyParser from "body-parser";
 import cors from "cors";
 import WebSocket, { Server as WebSocketServer } from 'ws';
 import http from 'http';
-import { initialize, RATE_LIMIT } from "./init";
+import { initialize } from "./init";
 import { bidOnOpensea, cancelOrder, fetchOpenseaListings, fetchOpenseaOffers, IFee } from "./marketplace/opensea";
 import { bidOnBlur, cancelBlurBid, fetchBlurBid, fetchBlurCollectionStats } from "./marketplace/blur/bid";
 import { bidOnMagiceden, cancelMagicEdenBid, fetchMagicEdenCollectionStats, fetchMagicEdenOffer, fetchMagicEdenTokens } from "./marketplace/magiceden";
 import { getCollectionDetails, getCollectionStats } from "./functions";
 import mongoose from 'mongoose';
 import Task from "./models/task.model";
-import { Queue, Worker, QueueEvents, Job } from "bullmq";
+import { Queue, Worker, QueueEvents, Job, QueueOptions } from "bullmq";
 import Wallet from "./models/wallet.model";
 import redisClient from "./utils/redis";
 import { WETH_CONTRACT_ADDRESS, WETH_MIN_ABI } from "./constants";
@@ -20,8 +20,6 @@ import { AbortController } from 'node-abort-controller';
 
 const SEAPORT = '0x1e0049783f008a0085193e00003d00cd54003c71';
 const redis = redisClient.getClient()
-const bullRedis = redisClient.getBullClient()
-
 const CANCEL_PRIORITY = {
   OPENSEA: 1,
   MAGICEDEN: 2,
@@ -62,7 +60,6 @@ const BLUR = "BLUR";
 export const currentTasks: ITask[] = [];
 
 const QUEUE_NAME = 'BIDDING_BOT';
-const UPDATE_STATUS = "UPDATE_STATUS"
 
 export const OPENSEA_SCHEDULE = "OPENSEA_SCHEDULE"
 export const OPENSEA_TRAIT_BID = "OPENSEA_TRAIT_BID"
@@ -75,18 +72,15 @@ const MAGICEDEN_TRAIT_BID = "MAGICEDEN_TRAIT_BID"
 const CANCEL_OPENSEA_BID = "CANCEL_OPENSEA_BID"
 const CANCEL_MAGICEDEN_BID = "CANCEL_MAGICEDEN_BID"
 const CANCEL_BLUR_BID = "CANCEL_BLUR_BID"
-const START_TASK = "START_TASK"
-const STOP_TASK = "STOP_TASK"
 const MAGICEDEN_MARKETPLACE = "0x9A1D00bEd7CD04BCDA516d721A596eb22Aac6834"
 
 const MAX_RETRIES: number = 5;
 const MARKETPLACE_WS_URL = "wss://wss-marketplace.nfttools.website";
 const ALCHEMY_API_KEY = "0rk2kbu11E5PDyaUqX1JjrNKwG7s4ty5"
 
-const CONCURRENCY = RATE_LIMIT * 1.5;
 const OPENSEA_PROTOCOL_ADDRESS = "0x0000000000000068F116a894984e2DB1123eB395"
-const QUEUE_OPTIONS = {
-  connection: bullRedis,
+const QUEUE_OPTIONS: QueueOptions = {
+  connection: redis,
   defaultJobOptions: {
     attempts: 3,
     backoff: {
@@ -95,14 +89,13 @@ const QUEUE_OPTIONS = {
     },
     removeOnComplete: true,
     removeOnFail: true,
-    timeout: 30000, // 30 second timeout
   }
 };
 
 export const queue = new Queue(QUEUE_NAME, QUEUE_OPTIONS);
 
 const queueEvents = new QueueEvents(QUEUE_NAME, {
-  connection: bullRedis
+  connection: redis
 });
 
 const app = express();
@@ -117,63 +110,28 @@ let ws: WebSocket;
 let heartbeatIntervalId: NodeJS.Timeout | null = null;
 let reconnectTimeoutId: NodeJS.Timeout | null = null;
 let retryCount: number = 0;
-let waitingQueueCount = 0;
 
 const walletsArr: string[] = []
 
 const worker = new Worker(
   QUEUE_NAME,
   async (job) => {
-    const lockKey = `lock:${job.name}:${job.id}`;
-    const heartbeatInterval = 5000; // 5 seconds
-    let heartbeat: NodeJS.Timeout | null = null;
-
     try {
-      const acquired = await redis.setex(lockKey, 30, '1');
-      if (!acquired) {
-        throw new Error('Job already being processed');
-      }
-
-      heartbeat = setInterval(async () => {
-        try {
-          await redis.expire(lockKey, 30);
-          await job.updateProgress(50);
-        } catch (error) {
-          console.error(RED + `Heartbeat failed for job ${job.id}:`, error, RESET);
-        }
-      }, heartbeatInterval);
-
-      // Process the job
       const result = await processJob(job);
       return result;
-
     } catch (error) {
       console.error(RED + `Error processing job ${job.id}:`, error, RESET);
       throw error;
-    } finally {
-      // Cleanup
-      if (heartbeat !== null) {
-        clearInterval(heartbeat);
-      }
-      try {
-        await redis.del(lockKey);
-      } catch (error) {
-        console.error(RED + `Error cleaning up lock for job ${job.id}:`, error, RESET);
-      }
     }
   },
   {
-    connection: bullRedis,
-    concurrency: CONCURRENCY,
+    connection: redis,
+    concurrency: 64,
     maxStalledCount: 3,
     lockDuration: 30000,
     limiter: {
-      max: RATE_LIMIT,
+      max: 64,
       duration: 1000
-    },
-    // Add memory management options
-    settings: {
-
     }
   }
 );
@@ -192,8 +150,71 @@ worker.on('stalled', jobId => {
   console.warn(YELLOW + `Job ${jobId} stalled - will be retried` + RESET);
 });
 
+async function monitorHealth() {
+  try {
+    const used = process.memoryUsage();
+    const memoryStats = {
+      rss: `${Math.round(used.rss / 1024 / 1024)}MB`,      // Resident Set Size
+      heapTotal: `${Math.round(used.heapTotal / 1024 / 1024)}MB`,
+      heapUsed: `${Math.round(used.heapUsed / 1024 / 1024)}MB`,
+      external: `${Math.round(used.external / 1024 / 1024)}MB`,
+    };
+
+    const queueStats = {
+      waiting: await queue.getWaitingCount(),
+      active: await queue.getActiveCount(),
+      failed: await queue.getFailedCount(),
+      delayed: await queue.getDelayedCount(),
+      paused: (await queue.getJobs(["paused"])).length
+    };
+
+    const totalJobs = Object.values(queueStats).reduce((a, b) => a + b, 0);
+
+    console.log('\n=== Health Monitor Stats ===');
+
+    console.log(BLUE + '\nMemory Usage:' + RESET);
+    Object.entries(memoryStats).forEach(([key, value]) => {
+      console.log(`${key}: ${value}`);
+    });
+
+    console.log(BLUE + '\nQueue Status:' + RESET);
+    Object.entries(queueStats).forEach(([key, value]) => {
+      const color = value > 100 ? RED : value > 50 ? YELLOW : GREEN;
+      console.log(`${key}: ${color}${value}${RESET}`);
+    });
+    console.log(`Total Jobs: ${totalJobs}`);
+
+    const isWorkerActive = worker.isRunning();
+    console.log(BLUE + '\nWorker Status:' + RESET, isWorkerActive ? GREEN + 'Running' + RESET : RED + 'Stopped' + RESET);
+
+    // New logic to pause and resume the queue based on active job count
+    if (queueStats.active > 64) {
+      console.log(YELLOW + 'Pausing the queue due to high active job count.'.toUpperCase() + RESET);
+      await queue.pause();
+    } else if (queueStats.active <= 32) {
+      console.log(GREEN + 'Resuming the queue as active job count is low.'.toUpperCase() + RESET);
+      await queue.resume();
+    }
+
+    console.log('\n=== End Health Monitor ===\n');
+
+  } catch (error) {
+    console.error(RED + 'Error monitoring health:', error, RESET);
+  }
+}
+
+const HEALTH_CHECK_INTERVAL = 5000;
+setInterval(monitorHealth, HEALTH_CHECK_INTERVAL);
+
 async function cleanup() {
   console.log(YELLOW + '\n=== Starting Cleanup ===');
+
+  console.log('Stopping health monitor...');
+  for (const timeout of require('timers').getActiveHandles()) {
+    if (timeout._onTimeout === monitorHealth) {
+      clearInterval(timeout);
+    }
+  }
 
   console.log('Closing worker...');
   await worker.close();
@@ -337,20 +358,6 @@ wss.on('connection', (ws) => {
 
 connectWebSocket()
 
-const MAX_WAITING_JOBS = RATE_LIMIT * 5;
-
-async function checkQueueSize(): Promise<boolean> {
-  const waitingCount = await queue.getWaitingCount();
-  const delayedCount = await queue.getDelayedCount();
-  const totalWaiting = waitingCount + delayedCount;
-
-  if (totalWaiting >= MAX_WAITING_JOBS) {
-    console.log(RED + `QUEUE LIMIT REACHED - WAITING: ${waitingCount}, DELAYED: ${delayedCount}, MAX: ${MAX_WAITING_JOBS}` + RESET);
-    return false;
-  }
-  return true;
-}
-
 async function processJob(job: Job) {
   switch (job.name) {
     case OPENSEA_SCHEDULE:
@@ -385,44 +392,50 @@ queueEvents.on('failed', ({ jobId, failedReason }) => {
 });
 
 async function processBulkJobs(jobs: any[]) {
-  const BATCH_SIZE = RATE_LIMIT;
+  const BATCH_SIZE = 64;
+  const DELAY_MS = 1000;
+  const MAX_CONCURRENT_BATCHES = 3;
+
   const chunks = [];
-
-  const jobTypes = jobs.reduce((acc: { [key: string]: number }, job) => {
-    acc[job.name] = (acc[job.name] || 0) + 1;
-    return acc;
-  }, {});
-
   for (let i = 0; i < jobs.length; i += BATCH_SIZE) {
     chunks.push(jobs.slice(i, i + BATCH_SIZE));
   }
 
+  console.log(`Processing ${jobs.length} jobs in ${chunks.length} batches`);
 
-  await Promise.all(
-    chunks.map(async (chunk, index) => {
-      if (index > 0) {
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
+  for (let i = 0; i < chunks.length; i += MAX_CONCURRENT_BATCHES) {
+    const currentBatch = chunks.slice(i, i + MAX_CONCURRENT_BATCHES);
 
-      const result = await queue.addBulk(
-        chunk.map(job => ({
-          ...job,
-          opts: {
-            ...job.opts,
-            removeOnComplete: true,
-            removeOnFail: true,
-            attempts: 3,
-            backoff: {
-              type: 'exponential',
-              delay: 1000
+    await Promise.all(currentBatch.map(async (chunk, index) => {
+      try {
+
+        await new Promise(resolve => setTimeout(resolve, DELAY_MS));
+
+        await queue.addBulk(
+          chunk.map(job => ({
+            ...job,
+            opts: {
+              ...job.opts,
+              removeOnComplete: true,
+              removeOnFail: true,
+              attempts: 3,
+              backoff: {
+                type: 'exponential',
+                delay: 2000,
+              },
+              timeout: 45000,
             }
-          }
-        }))
-      );
-      return result;
-    })
-  );
+          }))
+        );
+      } catch (error) {
+        console.error(`Error processing batch ${i + index}:`, error);
+      }
+    }));
+
+    await new Promise(resolve => setTimeout(resolve, DELAY_MS));
+  }
 }
+
 
 async function processNewTask(task: ITask) {
   try {
@@ -502,21 +515,18 @@ async function startTask(task: ITask, start: boolean) {
   }
 }
 
-// Add a map to store abort controllers for each task
 const taskAbortControllers = new Map<string, AbortController>();
 
 async function stopTask(task: ITask, start: boolean, marketplace?: string) {
   const taskId = task._id.toString();
-  const STOP_TIMEOUT = 120000; // Increase timeout to 2 minutes
+  const STOP_TIMEOUT = 120000;
 
-  // Create new abort controller for this task
   const abortController = new AbortController();
   taskAbortControllers.set(taskId, abortController);
 
   try {
     await updateTaskStatus(task, start, marketplace);
 
-    // Split cleanup into separate operations with individual timeouts
     const cleanupOperations = [
       {
         name: 'Remove pending bids',
@@ -542,7 +552,6 @@ async function stopTask(task: ITask, start: boolean, marketplace?: string) {
         ]);
       } catch (error) {
         console.error(RED + `Error during ${name.toLowerCase()} for task ${task.contract.slug}:` + RESET, error);
-        // Continue with next operation even if current one fails
       }
     }
 
@@ -554,11 +563,12 @@ async function stopTask(task: ITask, start: boolean, marketplace?: string) {
       }
     }
 
-    // Final verification of residual bids
     const residualBids = await checkForResidualBids(task, marketplace);
+
+    console.log({ residualBids });
+
     if (residualBids.length > 0) {
       console.warn(YELLOW + `Found ${residualBids.length} residual bids after stopping task` + RESET);
-      // Attempt one final cleanup with a shorter timeout
       try {
         await Promise.race([
           cancelAllRelatedBids(task, marketplace),
@@ -579,7 +589,6 @@ async function stopTask(task: ITask, start: boolean, marketplace?: string) {
   }
 }
 
-// Add helper function to check for residual bids
 async function checkForResidualBids(task: ITask, marketplace?: string): Promise<string[]> {
   const patterns = [];
 
@@ -679,98 +688,10 @@ async function waitForRunningJobsToComplete(task: ITask, marketplace?: string) {
   }
 }
 
-
 interface MarketplaceBids {
   marketplace: string;
   bids: string[];
   cancelFn: (bids: string[], privateKey: string, slug: string) => Promise<void>;
-}
-
-async function cancelAllRelatedBidsWithRetry(task: ITask, marketplace?: string) {
-  const maxRetries = 10;
-  const checkInterval = 500;
-  const cancelledBids = new Set<string>();
-
-  async function processBids(marketplaceBids: MarketplaceBids): Promise<{ success: boolean; processedBids: string[] }> {
-    const { marketplace, bids, cancelFn } = marketplaceBids;
-    if (!bids.length) return { success: true, processedBids: [] };
-
-    const remainingBids = bids.filter(bid => !cancelledBids.has(bid));
-    if (!remainingBids.length) return { success: true, processedBids: [] };
-
-    try {
-      await cancelFn(remainingBids, task.wallet.privateKey, task.contract.slug);
-      remainingBids.forEach(bid => cancelledBids.add(bid));
-
-      return { success: true, processedBids: remainingBids };
-    } catch (error) {
-      console.error(RED + `Error cancelling ${marketplace} bids:`, error, RESET);
-      return { success: false, processedBids: [] };
-    }
-  }
-
-  for (let retryCount = 0; retryCount < maxRetries; retryCount++) {
-    const { openseaBids, magicedenBids, blurBids } = await getAllRelatedBids(task);
-    const marketplacesToProcess: MarketplaceBids[] = [];
-
-    if (!marketplace || marketplace.toLowerCase() === OPENSEA.toLowerCase()) {
-      const remainingBids = openseaBids.filter(bid => !cancelledBids.has(bid));
-      if (remainingBids.length) {
-        marketplacesToProcess.push({
-          marketplace: OPENSEA,
-          bids: remainingBids,
-          cancelFn: cancelOpenseaBids
-        });
-      }
-    }
-
-    if (!marketplace || marketplace.toLowerCase() === MAGICEDEN.toLowerCase()) {
-      const remainingBids = magicedenBids.filter(bid => !cancelledBids.has(bid));
-      if (remainingBids.length) {
-        marketplacesToProcess.push({
-          marketplace: MAGICEDEN,
-          bids: remainingBids,
-          cancelFn: cancelMagicedenBids
-        });
-      }
-    }
-
-    if (!marketplace || marketplace.toLowerCase() === BLUR.toLowerCase()) {
-      const remainingBids = blurBids.filter(bid => !cancelledBids.has(bid));
-      if (remainingBids.length) {
-        marketplacesToProcess.push({
-          marketplace: BLUR,
-          bids: remainingBids,
-          cancelFn: cancelBlurBids
-        });
-      }
-    }
-
-    marketplacesToProcess.forEach(mp => {
-      if (mp.bids.length) {
-        console.log(`- ${mp.marketplace}: ${mp.bids.length} bids`);
-      }
-    });
-
-    const results = await Promise.allSettled(
-      marketplacesToProcess.map(mp => processBids(mp))
-    );
-
-    const hasRemainingBids = results.some(result => {
-      if (result.status === 'fulfilled') {
-        return !result.value.success;
-      }
-      return true;
-    });
-  }
-
-  const { openseaBids, magicedenBids, blurBids } = await getAllRelatedBids(task);
-  const uncancelledBids = [...openseaBids, ...magicedenBids, ...blurBids]
-    .filter(bid => !cancelledBids.has(bid));
-
-  if (uncancelledBids.length > 0) {
-    throw new Error(`Failed to cancel ${uncancelledBids.length} bids for ${task.contract.slug} after ${maxRetries} attempts`);
-  }
 }
 
 async function updateTaskStatus(task: ITask, running: boolean, marketplace?: string) {
@@ -863,7 +784,7 @@ async function getAllRelatedBids(task: ITask) {
 
 async function cancelOpenseaBids(bids: string[], privateKey: string, slug: string) {
   const bidData = await Promise.all(bids.map(key => redis.get(key)));
-  if (bidData.length) { console.log(RED + `Found ${bidData.length} OpenSea bids to cancel for ${slug}`.toUpperCase()) }
+  if (bidData.length) { console.log(RED + `Found ${bidData.length} OpenSea bids to cancel for ${slug}`.toUpperCase() + RESET) }
   const cancelData = bidData.map(bid => ({
     name: CANCEL_OPENSEA_BID,
     data: { orderHash: bid, privateKey },
@@ -886,7 +807,6 @@ async function cancelOpenseaBids(bids: string[], privateKey: string, slug: strin
     await cancelOpenseaBids(remainingOrderKeys, privateKey, slug);
   }
 }
-
 
 async function cancelMagicedenBids(orderKeys: string[], privateKey: string, slug: string) {
   if (!orderKeys.length) {
@@ -1079,22 +999,6 @@ async function handleOutgoingMarketplace(marketplace: string, task: ITask) {
   }
 }
 
-async function cancelExistingBids(marketplace: string, task: ITask, selectedTraits: any) {
-  const config = getMarketplaceConfig(marketplace.toLowerCase());
-  if (!config) return;
-
-  async function cancelBidsRecursively(): Promise<void> {
-    const bids = await getBidsForMarketplace(marketplace, task, selectedTraits);
-    await processBidCancellations(marketplace, bids, task);
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    await cancelBidsRecursively();
-  }
-
-  await cancelBidsRecursively();
-  await new Promise(resolve => setTimeout(resolve, 5000));
-  await cancelBidsRecursively();
-}
-
 function getMarketplaceConfig(marketplace: string) {
   const configs: any = {
     'opensea': {
@@ -1111,95 +1015,6 @@ function getMarketplaceConfig(marketplace: string) {
     }
   } as const;
   return configs[marketplace];
-}
-
-async function getBidsForMarketplace(marketplace: string, task: ITask, selectedTraits: any) {
-  const pattern = task.bidType === "token" ?
-    `*:${marketplace}:order:${task.contract.slug}:[0-9]*` :
-    task.bidType === "collection" && (!selectedTraits || Object.keys(selectedTraits).length === 0) ?
-      `*:${marketplace}:order:${task.contract.slug}:default` :
-      `*:${marketplace}:order:${task.contract.slug}:*`;
-
-  return await redis.keys(pattern);
-}
-
-async function processBidCancellations(marketplace: string, bids: string[], task: ITask) {
-  const bidData = await Promise.all(bids.map(key => redis.get(key)));
-
-
-  switch (marketplace) {
-    case 'opensea':
-      const cancelData = bidData.map(bid => ({
-        name: CANCEL_OPENSEA_BID,
-        data: { orderHash: bid, privateKey: task.wallet.privateKey },
-        opts: { priority: CANCEL_PRIORITY.OPENSEA }
-      }));
-      if (cancelData.length) {
-        await processBulkJobs(cancelData);
-      }
-
-      const openseaOfferKeys = await redis.keys(`*:opensea:${task.contract.slug}:*`);
-      if (openseaOfferKeys.length) {
-        await redis.del(...openseaOfferKeys);
-      }
-      break;
-
-    case 'blur':
-      const blurCancelData = bidData
-        .filter(data => data !== null)
-        .map(data => JSON.parse(data))
-        .map(bid => ({
-          name: CANCEL_BLUR_BID,
-          data: { payload: bid, privateKey: task.wallet.privateKey },
-          opts: { priority: CANCEL_PRIORITY.BLUR }
-        }));
-      if (blurCancelData.length) {
-        await processBulkJobs(blurCancelData);
-      }
-
-      const blurOfferKeys = await redis.keys(`*:blur:${task.contract.slug}:*`);
-      if (blurOfferKeys.length) {
-        await redis.del(...blurOfferKeys);
-      }
-      break;
-
-    case 'magiceden':
-      const magicedenOrderIds = bidData
-        .filter(data => data !== null)
-        .map(data => JSON.parse(data))
-        .filter(data => data?.message?.toLowerCase() === "success")
-        .map(data => data.orderId);
-      if (magicedenOrderIds.length) {
-        await queue.add(CANCEL_MAGICEDEN_BID, {
-          orderIds: magicedenOrderIds,
-          privateKey: task.wallet.privateKey
-        }, { priority: CANCEL_PRIORITY.MAGICEDEN });
-      }
-
-      const magicedenOfferKeys = await redis.keys(`*:magiceden:${task.contract.slug}:*`);
-      if (magicedenOfferKeys.length) {
-        await redis.del(...magicedenOfferKeys);
-      }
-      break;
-  }
-
-  await Promise.all(bids.map(key => redis.del(key)));
-
-  const magicedenOfferKeys = await redis.keys(`*:magiceden:${task.contract.slug}:*`);
-  if (magicedenOfferKeys.length) {
-    await redis.del(...magicedenOfferKeys);
-  }
-
-  const blurOfferKeys = await redis.keys(`*:blur:${task.contract.slug}:*`);
-  if (blurOfferKeys.length) {
-    await redis.del(...blurOfferKeys);
-  }
-
-  const openseaOfferKeys = await redis.keys(`*:opensea:${task.contract.slug}:*`);
-  if (openseaOfferKeys.length) {
-    await redis.del(...openseaOfferKeys);
-  }
-
 }
 
 async function updateMultipleTasksStatus(data: { tasks: ITask[], running: boolean }) {
@@ -1513,8 +1328,6 @@ async function handleMagicEdenCounterbid(data: any, task: ITask) {
 
       const bidCount = await getIncrementedBidCount(MAGICEDEN, task.contract.slug)
       await bidOnMagiceden(bidCount, task.wallet.address, task.contract.contractAddress, 1, offerPrice.toString(), task.wallet.privateKey, task.contract.slug);
-      const offerKey = `${bidCount}:${redisKey}`
-      await redis.setex(offerKey, expiry, offerPrice.toString());
     }
   } catch (error) {
     console.error(RED + `Error handling MAGICEDEN counterbid: ${JSON.stringify(error)}` + RESET);
@@ -2317,9 +2130,6 @@ async function processMagicedenScheduledBid(task: ITask) {
       }
       const bidCount = await getIncrementedBidCount(MAGICEDEN, task.contract.slug)
       await bidOnMagiceden(bidCount, WALLET_ADDRESS, contractAddress, 1, offerPrice.toString(), WALLET_PRIVATE_KEY, task.contract.slug);
-      const redisKey = `magiceden:${task.contract.slug}:collection`;
-      const offerKey = `${bidCount}:${redisKey}`
-      await redis.setex(offerKey, expiry, offerPrice.toString());
     }
   } catch (error) {
     console.error(RED + `Error processing MagicEden scheduled bid for task: ${task._id}` + RESET, error);
@@ -2382,10 +2192,6 @@ async function processMagicedenTokenBid(data: {
 
     const bidCount = await getIncrementedBidCount(MAGICEDEN, slug)
     await bidOnMagiceden(bidCount, address, contractAddress, quantity, collectionOffer.toString(), privateKey, slug, undefined, tokenId)
-    const expiry = Math.ceil(+expiration - (Date.now() / 1000))
-    const redisKey = `magiceden:${slug}:${tokenId}`;
-    const offerKey = `${bidCount}:${redisKey}`
-    await redis.setex(offerKey, expiry, collectionOffer.toString());
   } catch (error) {
     console.error(RED + `Error processing MagicEden token bid for task: ${data?.slug}` + RESET, error);
   }
@@ -2411,10 +2217,6 @@ async function processMagicedenTraitBid(data: {
 
     const bidCount = await getIncrementedBidCount(MAGICEDEN, slug)
     await bidOnMagiceden(bidCount, address, contractAddress, quantity, offerPrice, privateKey, slug, trait)
-    const expiry = Math.ceil(+expiration - (Date.now() / 1000))
-    const redisKey = `magiceden:${slug}:${JSON.stringify(trait)}`;
-    const offerKey = `${bidCount}:${redisKey}`
-    await redis.setex(offerKey, expiry, offerPrice.toString());
   } catch (error) {
     console.error(RED + `Error processing MagicEden trait bid for task: ${data?.slug}` + RESET, error);
   }

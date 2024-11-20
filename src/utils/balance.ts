@@ -1,5 +1,4 @@
 import { ethers } from "ethers";
-import { AxiosInstance } from 'axios';
 import { Redis } from 'ioredis';
 import { axiosInstance, limiter } from "../init";
 
@@ -92,9 +91,10 @@ class BalanceChecker {
 
   async getWethBalance(address: string): Promise<number> {
     const cacheKey = `weth_balance:${address}`;
+    let cachedBalance = null;
 
     try {
-      const cachedBalance = await this.getCachedBalance(cacheKey);
+      cachedBalance = await this.getCachedBalance(cacheKey);
 
       if (!await this.lockManager.acquireLock(address, 'weth') && cachedBalance !== null) {
         return cachedBalance;
@@ -116,67 +116,75 @@ class BalanceChecker {
           }
         };
 
-        const response = await limiter.schedule(() =>
-          axiosInstance.post(
-            config.OPENSEA_API_URL,
-            payload,
-            {
-              headers: {
-                'x-nft-api-key': config.API_KEY,
-                'x-auth-address': address,
-                'x-signed-query': "51ab975e49c64eae0c01857a6fa0f29a3844856bfd4bbe3375321f6bcc4fdfac",
-              },
-            }
-          )
-        );
-
-        let responseData = response.data;
-        if (typeof responseData === 'string') {
+        // Retry logic with exponential backoff
+        const maxRetries = 3;
+        for (let attempt = 0; attempt <= maxRetries; attempt++) {
           try {
-            responseData = JSON.parse(responseData);
-          } catch (e) {
-            console.warn('Failed to parse string response:', e);
+            const response = await limiter.schedule(() =>
+              axiosInstance.post(
+                config.OPENSEA_API_URL,
+                payload,
+                {
+                  headers: {
+                    'x-nft-api-key': config.API_KEY,
+                    'x-auth-address': address,
+                    'x-signed-query': "51ab975e49c64eae0c01857a6fa0f29a3844856bfd4bbe3375321f6bcc4fdfac",
+                  },
+                }
+              )
+            );
+
+            let responseData = response.data;
+            if (!responseData || typeof responseData !== 'object') {
+              console.warn('Invalid response data format:', responseData);
+              return cachedBalance ?? 0;
+            }
+
+            const balance = this.extractBalanceFromResponse(responseData, cachedBalance);
+            await this.setCachedBalance(cacheKey, balance);
+            return balance;
+          } catch (error) {
+            if (attempt === maxRetries) {
+              console.error("Error in WETH balance fetch after retries:", error);
+              return cachedBalance ?? 0;
+            }
+            const backoffTime = Math.pow(2, attempt) * 100; // Exponential backoff
+            await new Promise(resolve => setTimeout(resolve, backoffTime));
           }
         }
-
-        const balance = this.extractBalanceFromResponse(responseData);
-        if (balance === 0) {
-          return 0;
-        }
-        await this.setCachedBalance(cacheKey, balance);
-        return balance;
       } catch (error) {
         console.error("Error in WETH balance fetch:", error);
-        return 0;
-      } finally {
-        this.lockManager.releaseLock(address, 'weth');
+        return cachedBalance ?? 0;
       }
     } catch (error) {
       this.lockManager.releaseLock(address, 'weth');
       console.error("Error fetching WETH balance:", error);
-      return 0;
+      return cachedBalance ?? 0;
     }
+    return cachedBalance ?? 0;
   }
 
-  private extractBalanceFromResponse(data: any): number {
-    try {
-      // Try different paths to find the balance
-      if (data?.data?.wallet?.wrappedCurrencyFunds?.quantity) {
-        return Number(data.data.wallet.wrappedCurrencyFunds.quantity);
-      }
-      // Add any other potential paths to find the balance here
-      throw new Error('Balance not found in the response');
-    } catch (e) {
-      console.warn('Failed to extract balance from response:', e);
-      throw e;
+  private extractBalanceFromResponse(data: any, cachedBalance: number | null = 0): number {
+    if (!data?.data?.wallet?.wrappedCurrencyFunds?.quantity) {
+      console.warn('Unexpected response structure:', data);
+      return cachedBalance ?? 0;
     }
+
+    const balance = Number(data.data.wallet.wrappedCurrencyFunds.quantity);
+    if (isNaN(balance)) {
+      console.warn('Invalid balance value:', data.data.wallet.wrappedCurrencyFunds.quantity);
+      return cachedBalance ?? 0;
+    }
+
+    return balance;
   }
 
   async getBethBalance(address: string): Promise<number> {
     const cacheKey = `beth_balance:${address}`;
+    let cachedBalance = null;
 
     try {
-      const cachedBalance = await this.getCachedBalance(cacheKey);
+      cachedBalance = await this.getCachedBalance(cacheKey);
 
       if (!await this.lockManager.acquireLock(address, 'beth') && cachedBalance !== null) {
         return cachedBalance;
@@ -194,19 +202,34 @@ class BalanceChecker {
           this.deps.provider
         );
 
-        const balance = await wethContract.balanceOf(address);
-        const formattedBalance = Number(ethers.utils.formatEther(balance));
+        // Retry logic with exponential backoff
+        const maxRetries = 3;
+        for (let attempt = 0; attempt <= maxRetries; attempt++) {
+          try {
+            const balance = await wethContract.balanceOf(address);
+            const formattedBalance = Number(ethers.utils.formatEther(balance));
 
-        await this.setCachedBalance(cacheKey, formattedBalance);
-        return formattedBalance;
+            await this.setCachedBalance(cacheKey, formattedBalance);
+            return formattedBalance;
+          } catch (error) {
+            if (attempt === maxRetries) {
+              console.error("Error fetching BETH balance after retries:", error);
+              return cachedBalance ?? 0;
+            }
+            const backoffTime = Math.pow(2, attempt) * 100; // Exponential backoff
+            await new Promise(resolve => setTimeout(resolve, backoffTime));
+          }
+        }
       } finally {
         this.lockManager.releaseLock(address, 'beth');
       }
     } catch (error) {
       this.lockManager.releaseLock(address, 'beth');
       console.error("Error fetching BETH balance:", error);
-      return 0;
+      return cachedBalance ?? 0;
     }
+
+    return 0;
   }
 }
 

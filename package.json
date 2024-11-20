@@ -9,6 +9,7 @@
 		"dev": "nodemon src/index.ts",
 		"ci": "npm install --frozen-lockfile",
 		"dc:up": "docker compose up -d",
+		"dc:destroy": "docker compose down --volumes --remove-orphans --timeout 15",
 		"test": "nodemon test.ts",
 		"bench": "nodemon bench.js"
 	},
@@ -23,6 +24,7 @@
 		"@types/ws": "^8.5.12",
 		"nodemon": "^3.1.4",
 		"ts-node": "^10.9.2",
+		"tsconfig-paths": "^4.2.0",
 		"typescript": "^5.5.4"
 	},
 	"dependencies": {

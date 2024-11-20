@@ -227,10 +227,9 @@ export async function bidOnOpensea(
   const totalOffersWithNew = totalExistingOffers / 1e18 + Number(offerPriceEth)
   if (totalOffersWithNew > wethBalance * bidLimit) {
     console.log(RED + '-----------------------------------------------------------------------------------------------------------' + RESET);
-    console.log(RED + `Total offers (${totalOffersWithNew} WETH) would exceed 1000x available BETH balance (${wethBalance * 1000} WETH). SKIPPING ...`.toUpperCase() + RESET);
+    console.log(RED + `Total offers (${totalOffersWithNew} WETH) would exceed 1000x available WETH balance (${wethBalance * 1000} WETH). SKIPPING ...`.toUpperCase() + RESET);
     console.log(RED + '-----------------------------------------------------------------------------------------------------------' + RESET);
 
-    // Remove all OpenSea jobs from the queue
     const jobs = await queue.getJobs(['waiting', 'delayed', 'failed', 'paused', 'prioritized', 'repeat', 'wait', 'waiting', 'waiting-children']);
     const openseaJobs = jobs.filter(job =>
       [OPENSEA_SCHEDULE, OPENSEA_TRAIT_BID, OPENSEA_TOKEN_BID].includes(job?.name) &&
@@ -238,11 +237,8 @@ export async function bidOnOpensea(
     );
 
     if (openseaJobs.length > 0) {
-      const results = await Promise.allSettled(openseaJobs.map(job => job.remove()));
-      const removedCount = results.filter(result => result.status === 'fulfilled').length;
-      const failedCount = results.filter(result => result.status === 'rejected').length;
-
-      console.log(RED + `Removed ${removedCount} OpenSea jobs from queue due to insufficient WETH balance (${failedCount} failed)` + RESET);
+      console.log(RED + `REMOVING ${openseaJobs.length} JOB(S) DUE TO OUTSTANDING ORDER TO WALLET BALANCE RATIO EXCEEDING ALLOWED LIMIT.` + RESET);
+      await Promise.allSettled(openseaJobs.map(job => job.remove()));
     }
 
     return
@@ -480,19 +476,15 @@ async function submitOfferToOpensea(privateKey: string, slug: string, bidCount: 
       error?.message?.errors?.[0] === 'Outstanding order to wallet balance ratio exceeds allowed limit.' ||
       error?.response?.data?.message === 'Outstanding order to wallet balance ratio exceeds allowed limit.' ||
       error?.message === 'Outstanding order to wallet balance ratio exceeds allowed limit.') {
-      // Remove all OpenSea jobs from the queue
       const jobs = await queue.getJobs(['waiting', 'delayed', 'failed', 'paused', 'prioritized', 'repeat', 'wait', 'waiting', 'waiting-children']);
       const openseaJobs = jobs.filter(job =>
         [OPENSEA_SCHEDULE, OPENSEA_TRAIT_BID, OPENSEA_TOKEN_BID].includes(job?.name) &&
-        !job?.lockKey // Only include jobs that aren't locked by a worker
+        !job?.lockKey
       );
 
       if (openseaJobs.length > 0) {
-        const results = await Promise.allSettled(openseaJobs.map(job => job.remove()));
-        const removedCount = results.filter(result => result.status === 'fulfilled').length;
-        const failedCount = results.filter(result => result.status === 'rejected').length;
-
-        console.log(RED + `Removed ${removedCount} OpenSea jobs from queue due to insufficient WETH balance (${failedCount} failed)` + RESET);
+        console.log(RED + `REMOVING ${openseaJobs.length} JOB(S) DUE TO OUTSTANDING ORDER TO WALLET BALANCE RATIO EXCEEDING ALLOWED LIMIT.` + RESET);
+        await Promise.allSettled(openseaJobs.map(job => job.remove()));
       }
     } else {
       console.log("opensea post offer error", error?.response?.data || error?.message || error);
@@ -628,11 +620,8 @@ async function postItemOffer(offer: unknown, signature: string) {
       );
 
       if (openseaJobs.length > 0) {
-        const results = await Promise.allSettled(openseaJobs.map(job => job.remove()));
-        const removedCount = results.filter(result => result.status === 'fulfilled').length;
-        const failedCount = results.filter(result => result.status === 'rejected').length;
-
-        console.log(RED + `Removed ${removedCount} OpenSea jobs from queue due to insufficient WETH balance (${failedCount} failed)` + RESET);
+        console.log(RED + `REMOVING ${openseaJobs.length} JOB(S) DUE TO OUTSTANDING ORDER TO WALLET BALANCE RATIO EXCEEDING ALLOWED LIMIT.` + RESET);
+        await Promise.allSettled(openseaJobs.map(job => job.remove()));
       }
     } else {
       console.log("opensea post item offer error", error?.response?.data || error?.message || error);
