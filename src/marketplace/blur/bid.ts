@@ -75,7 +75,7 @@ export async function bidOnBlur(
       const removedCount = results.filter(result => result.status === 'fulfilled').length;
       const failedCount = results.filter(result => result.status === 'rejected').length;
 
-      console.log(RED + `Removed ${removedCount} Blur jobs from queue due to insufficient BETH balance (${failedCount} failed)` + RESET);
+      console.log(RED + `Removed ${removedCount} Blur jobs from queue due to insufficient BETH balance (${failedCount} failed)`.toUpperCase() + RESET);
     }
     return
   }
@@ -328,8 +328,7 @@ async function submitBidToBlur(
         const results = await Promise.allSettled(blurJobs.map(job => job.remove()));
         const removedCount = results.filter(result => result.status === 'fulfilled').length;
         const failedCount = results.filter(result => result.status === 'rejected').length;
-
-        console.log(RED + `Removed ${removedCount} Blur jobs from queue due to insufficient BETH balance (${failedCount} failed)` + RESET);
+        console.log(RED + `Removed ${removedCount} Blur jobs from queue due to insufficient BETH balance (${failedCount} failed)`.toUpperCase() + RESET);
       }
     } else {
       console.error("Error submitting bid:", error.response?.data || error.message);
