@@ -1022,13 +1022,13 @@ async function updateMultipleTasksStatus(data: { tasks: ITask[], running: boolea
     const { tasks, running } = data;
 
     if (running) {
-      for (const task of tasks) {
+      await Promise.all(tasks.map(async (task) => {
         try {
           await startTask(task, true);
         } catch (error) {
           console.error(RED + `Error starting task ${task.contract.slug}:` + RESET, error);
         }
-      }
+      }));
     } else {
       await Promise.all(tasks.map(async (task) => {
         try {
