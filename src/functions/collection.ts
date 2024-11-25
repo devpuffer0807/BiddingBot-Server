@@ -68,7 +68,7 @@ export async function getCollectionStats(collectionSlug: string) {
       headers: { 'X-NFT-API-Key': API_KEY }
     }));
 
-    await redis.setex(cacheKey, 300, JSON.stringify(data));
+    await redis.setex(cacheKey, 30, JSON.stringify(data));
     return data;
   } catch (error) {
     console.error('Error fetching collection stats:', error);
