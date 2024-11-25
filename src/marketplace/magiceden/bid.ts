@@ -36,7 +36,7 @@ const balanceChecker = createBalanceChecker(deps);
  */
 
 export async function bidOnMagiceden(
-  bidCount: number,
+  bidCount: string,
   maker: string,
   collection: string,
   quantity: number,
@@ -243,7 +243,7 @@ async function signOrderData(wallet: ethers.Wallet, signData: any, trait?: Trait
 * @param trait - Collection trait
  * @returns The response from the API.
  */
-async function sendSignedOrderData(offerPrice: string | number, privateKey: string, bidCount: number, signature: string, data: any, slug: string, expiry: number = 900, trait?: Trait, tokenId?: number | string) {
+async function sendSignedOrderData(offerPrice: string | number, privateKey: string, bidCount: string, signature: string, data: any, slug: string, expiry: number = 900, trait?: Trait, tokenId?: number | string) {
   try {
     const task = await currentTasks.find((task) =>
       task.contract.slug.toLowerCase() === slug.toLowerCase() &&
@@ -332,7 +332,7 @@ const extractAddress = (message: string): string | null => {
  * @param slug - Collection slug
 
  */
-export async function submitSignedOrderData(offerPrice: string | number, privateKey: string, bidCount: number, order: CreateBidData, wallet: ethers.Wallet, slug: string, expiry = 900, trait?: Trait, tokenId?: number | string) {
+export async function submitSignedOrderData(offerPrice: string | number, privateKey: string, bidCount: string, order: CreateBidData, wallet: ethers.Wallet, slug: string, expiry = 900, trait?: Trait, tokenId?: number | string) {
   const task = currentTasks.find((task) => task.contract.slug.toLowerCase() === slug.toLowerCase() && task.selectedMarketplaces.includes("MagicEden"))
   if (!task?.running) return
 

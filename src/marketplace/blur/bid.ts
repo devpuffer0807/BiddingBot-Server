@@ -34,7 +34,7 @@ const provider = new ethers.providers.AlchemyProvider('mainnet', ALCHEMY_API_KEY
  * @param traits - Optional traits for the offer.
  */
 export async function bidOnBlur(
-  bidCount: number,
+  bidCount: string,
   wallet_address: string,
   private_key: string,
   contractAddress: string,
@@ -267,7 +267,7 @@ async function formatBidOnBlur(
  * @param slug - The slug of the collection.
  */
 async function submitBidToBlur(
-  bidCount: number,
+  bidCount: string,
   url: string,
   accessToken: string,
   walletAddress: string,

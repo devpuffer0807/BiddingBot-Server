@@ -194,7 +194,7 @@ async function buildItemOffer(offerSpecification: ItemOfferSpecification) {
  * @param openseaTraits - Optional traits for the offer.
  */
 export async function bidOnOpensea(
-  bidCount: number,
+  bidCount: string,
   wallet_address: string,
   private_key: string,
   slug: string,
@@ -434,7 +434,7 @@ export async function bidOnOpensea(
  * Posts an offer to OpenSea.
  * @param payload - The payload of the offer.
  */
-async function submitOfferToOpensea(privateKey: string, slug: string, bidCount: number, payload: IPayload, expiry = 900, opensea_traits?: string) {
+async function submitOfferToOpensea(privateKey: string, slug: string, bidCount: string, payload: IPayload, expiry = 900, opensea_traits?: string) {
   let task = currentTasks.find((task) => task.contract.slug.toLowerCase() === slug.toLowerCase() || task.selectedMarketplaces.includes("OpenSea"))
   if (!task?.running) return
   try {
