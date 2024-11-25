@@ -75,6 +75,7 @@ const CANCEL_BLUR_BID = "CANCEL_BLUR_BID"
 const MAGICEDEN_MARKETPLACE = "0x9A1D00bEd7CD04BCDA516d721A596eb22Aac6834"
 
 const MAX_RETRIES: number = 5;
+const RATE_LIMIT = 64
 const MARKETPLACE_WS_URL = "wss://wss-marketplace.nfttools.website";
 const ALCHEMY_API_KEY = "0rk2kbu11E5PDyaUqX1JjrNKwG7s4ty5"
 
@@ -126,11 +127,11 @@ const worker = new Worker(
   },
   {
     connection: redis,
-    concurrency: 64,
+    concurrency: RATE_LIMIT,
     maxStalledCount: 3,
     lockDuration: 30000,
     limiter: {
-      max: 64,
+      max: RATE_LIMIT,
       duration: 1000
     }
   }
@@ -188,7 +189,7 @@ async function monitorHealth() {
     console.log(BLUE + '\nWorker Status:' + RESET, isWorkerActive ? GREEN + 'Running' + RESET : RED + 'Stopped' + RESET);
 
     // New logic to pause and resume the queue based on active job count
-    if (queueStats.active > 64) {
+    if (queueStats.active > RATE_LIMIT) {
       console.log(YELLOW + 'Pausing the queue due to high active job count.'.toUpperCase() + RESET);
       await queue.pause();
     } else if (queueStats.active <= 32) {
@@ -392,7 +393,7 @@ queueEvents.on('failed', ({ jobId, failedReason }) => {
 });
 
 async function processBulkJobs(jobs: any[]) {
-  const BATCH_SIZE = 64;
+  const BATCH_SIZE = RATE_LIMIT;
   const DELAY_MS = 1000;
   const MAX_CONCURRENT_BATCHES = 3;
 
