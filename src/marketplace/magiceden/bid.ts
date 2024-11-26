@@ -36,6 +36,7 @@ const balanceChecker = createBalanceChecker(deps);
  */
 
 export async function bidOnMagiceden(
+  taskId: string,
   bidCount: string,
   maker: string,
   collection: string,
@@ -78,11 +79,11 @@ export async function bidOnMagiceden(
     }
     try {
       if (tokenId) {
-        await submitSignedOrderData(weiPrice, privateKey, bidCount, order, wallet, slug, expiry, undefined, tokenId)
+        await submitSignedOrderData(taskId, weiPrice, privateKey, bidCount, order, wallet, slug, expiry, undefined, tokenId)
       } else if (trait) {
-        await submitSignedOrderData(weiPrice, privateKey, bidCount, order, wallet, slug, expiry, trait, undefined)
+        await submitSignedOrderData(taskId, weiPrice, privateKey, bidCount, order, wallet, slug, expiry, trait, undefined)
       } else {
-        await submitSignedOrderData(weiPrice, privateKey, bidCount, order, wallet, slug, expiry, undefined, undefined)
+        await submitSignedOrderData(taskId, weiPrice, privateKey, bidCount, order, wallet, slug, expiry, undefined, undefined)
       }
     } catch (error) {
       console.error('Error submitting signed order:', error);
@@ -243,7 +244,7 @@ async function signOrderData(wallet: ethers.Wallet, signData: any, trait?: Trait
 * @param trait - Collection trait
  * @returns The response from the API.
  */
-async function sendSignedOrderData(offerPrice: string | number, privateKey: string, bidCount: string, signature: string, data: any, slug: string, expiry: number = 900, trait?: Trait, tokenId?: number | string) {
+async function sendSignedOrderData(taskId: string, offerPrice: string | number, privateKey: string, bidCount: string, signature: string, data: any, slug: string, expiry: number = 900, trait?: Trait, tokenId?: number | string) {
   try {
     const task = await currentTasks.find((task) =>
       task.contract.slug.toLowerCase() === slug.toLowerCase() &&
@@ -298,6 +299,9 @@ async function sendSignedOrderData(offerPrice: string | number, privateKey: stri
       const offerKey = `${bidCount}:${redisKey}`
       await redis.setex(key, expiry, order);
       await redis.setex(offerKey, expiry, offerPrice.toString());
+      const countKey = `magiceden:${taskId}:count`;
+      
+      await redis.incr(countKey);
 
 
       console.log(MAGENTA, successMessage, RESET);
@@ -332,7 +336,7 @@ const extractAddress = (message: string): string | null => {
  * @param slug - Collection slug
 
  */
-export async function submitSignedOrderData(offerPrice: string | number, privateKey: string, bidCount: string, order: CreateBidData, wallet: ethers.Wallet, slug: string, expiry = 900, trait?: Trait, tokenId?: number | string) {
+export async function submitSignedOrderData(taskId: string, offerPrice: string | number, privateKey: string, bidCount: string, order: CreateBidData, wallet: ethers.Wallet, slug: string, expiry = 900, trait?: Trait, tokenId?: number | string) {
   const task = currentTasks.find((task) => task.contract.slug.toLowerCase() === slug.toLowerCase() && task.selectedMarketplaces.includes("MagicEden"))
   if (!task?.running) return
 
@@ -403,7 +407,7 @@ export async function submitSignedOrderData(offerPrice: string | number, private
         console.error('Sign data not found in order steps.');
       }
     }
-    const result = await sendSignedOrderData(offerPrice, privateKey, bidCount, signature, data, slug, expiry, trait, tokenId);
+    const result = await sendSignedOrderData(taskId, offerPrice, privateKey, bidCount, signature, data, slug, expiry, trait, tokenId);
     return result;
   } catch (error: any) {
     const errorDetails = {

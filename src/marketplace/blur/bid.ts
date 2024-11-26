@@ -34,6 +34,7 @@ const provider = new ethers.providers.AlchemyProvider('mainnet', ALCHEMY_API_KEY
  * @param traits - Optional traits for the offer.
  */
 export async function bidOnBlur(
+  taskId: string,
   bidCount: string,
   wallet_address: string,
   private_key: string,
@@ -167,7 +168,7 @@ export async function bidOnBlur(
       ]
     }
 
-    await submitBidToBlur(bidCount, BLUR_API_URL, accessToken, wallet_address, submitPayload, slug, cancelPayload, expiry, traits);
+    await submitBidToBlur(taskId, bidCount, BLUR_API_URL, accessToken, wallet_address, submitPayload, slug, cancelPayload, expiry, traits);
     // add offer keys
 
   } catch (error: any) {
@@ -267,6 +268,7 @@ async function formatBidOnBlur(
  * @param slug - The slug of the collection.
  */
 async function submitBidToBlur(
+  taskId: string,
   bidCount: string,
   url: string,
   accessToken: string,
@@ -315,6 +317,8 @@ async function submitBidToBlur(
       const key = `${bidCount}:${baseKey}`;
 
       await redis.setex(key, expiry, JSON.stringify(cancelPayload));
+      const countKey = `blur:${taskId}:count`;
+      await redis.incr(countKey);
     }
   } catch (error: any) {
     if (error.response?.data?.message?.message === 'Balance over-utilized' || error.message.message === 'Balance over-utilized') {

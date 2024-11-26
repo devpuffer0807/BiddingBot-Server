@@ -194,6 +194,7 @@ async function buildItemOffer(offerSpecification: ItemOfferSpecification) {
  * @param openseaTraits - Optional traits for the offer.
  */
 export async function bidOnOpensea(
+  taskId: string,
   bidCount: string,
   wallet_address: string,
   private_key: string,
@@ -301,6 +302,10 @@ export async function bidOnOpensea(
     const baseKey = `opensea:order:${slug}:${asset.tokenId}`;
 
     const key = `${bidCount}:${baseKey}`;
+
+    const countKey = `opensea:${taskId}:count`;
+    await redis.incr(countKey);
+
     await redis.setex(key, expiry, itemOrderHash);
 
     const successMessage = `🎉 TOKEN OFFER POSTED TO OPENSEA SUCCESSFULLY FOR: ${slug.toUpperCase()}  TOKEN: ${asset.tokenId} 🎉`
@@ -422,7 +427,7 @@ export async function bidOnOpensea(
       const task = currentTasks.find((task) => task.contract.slug.toLowerCase() === slug.toLowerCase() && task.selectedMarketplaces.includes("OpenSea"))
       if (!task?.running) return
 
-      await submitOfferToOpensea(private_key, slug, bidCount, payload, expiry, opensea_traits)
+      await submitOfferToOpensea(taskId, private_key, slug, bidCount, payload, expiry, opensea_traits)
     } catch (error: any) {
       console.log("opensea error", error);
     }
@@ -434,7 +439,7 @@ export async function bidOnOpensea(
  * Posts an offer to OpenSea.
  * @param payload - The payload of the offer.
  */
-async function submitOfferToOpensea(privateKey: string, slug: string, bidCount: string, payload: IPayload, expiry = 900, opensea_traits?: string) {
+async function submitOfferToOpensea(taskId: string, privateKey: string, slug: string, bidCount: string, payload: IPayload, expiry = 900, opensea_traits?: string) {
   let task = currentTasks.find((task) => task.contract.slug.toLowerCase() === slug.toLowerCase() || task.selectedMarketplaces.includes("OpenSea"))
   if (!task?.running) return
   try {
@@ -459,6 +464,10 @@ async function submitOfferToOpensea(privateKey: string, slug: string, bidCount: 
     const slug = offer?.criteria?.collection?.slug
     const baseKey = `opensea:order:${slug}:${trait}`;
     const key = `${bidCount}:${baseKey}`;
+
+    const countKey = `opensea:${taskId}:count`;
+    await redis.incr(countKey);
+
     await redis.setex(key, expiry, order_hash);
 
     const successMessage = opensea_traits ?
