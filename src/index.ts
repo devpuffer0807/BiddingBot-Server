@@ -22,26 +22,26 @@ const SEAPORT = '0x1e0049783f008a0085193e00003d00cd54003c71';
 const redis = redisClient.getClient()
 const CANCEL_PRIORITY = {
   OPENSEA: 1,
-  MAGICEDEN: 2,
-  BLUR: 3
+  MAGICEDEN: 1,
+  BLUR: 1
 };
 
 const TOKEN_BID_PRIORITY = {
   OPENSEA: 4,
-  MAGICEDEN: 5,
-  BLUR: 6
+  MAGICEDEN: 4,
+  BLUR: 4
 };
 
 const TRAIT_BID_PRIORITY = {
-  OPENSEA: 7,
-  MAGICEDEN: 8,
-  BLUR: 9
+  OPENSEA: 4,
+  MAGICEDEN: 4,
+  BLUR: 4
 };
 
 const COLLECTION_BID_PRIORITY = {
-  OPENSEA: 10,
-  MAGICEDEN: 11,
-  BLUR: 12
+  OPENSEA: 4,
+  MAGICEDEN: 4,
+  BLUR: 4
 };
 config()
 
@@ -119,6 +119,7 @@ const worker = new Worker(
   async (job) => {
     try {
       const result = await processJob(job);
+      cleanupMemory();
       return result;
     } catch (error) {
       console.error(RED + `Error processing job ${job.id}:`, error, RESET);
@@ -151,11 +152,77 @@ worker.on('stalled', jobId => {
   console.warn(YELLOW + `Job ${jobId} stalled - will be retried` + RESET);
 });
 
+// Add these constants at the top
+const MAX_TOTAL_JOBS = 1000; // Maximum total jobs allowed in queue
+const MAX_BATCH_TOTAL = 256; // Maximum jobs to process in one bulk operation
+
+// Add near the top with other imports
+import { clearTimeout } from 'timers';
+
+// Add these functions
+function cleanupMemory() {
+  if (global.gc) {
+    global.gc();
+  }
+}
+
+async function checkQueueHealth() {
+  const activeCount = await queue.getActiveCount();
+  const waitingCount = await queue.getWaitingCount();
+
+  if (activeCount + waitingCount > MAX_BATCH_TOTAL) {
+    console.log('Queue size exceeds limit, pausing new jobs...');
+    await queue.pause();
+    // Wait for jobs to process down
+    while ((await queue.getActiveCount()) > RATE_LIMIT) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    await queue.resume();
+  }
+}
+
+// Add this constant near the top with other constants
+const MIN_ACTIVE_JOBS = 64;
+
+// Add a new function to replenish jobs
+async function replenishJobs() {
+  try {
+    const activeCount = await queue.getActiveCount();
+    const waitingCount = await queue.getWaitingCount();
+    const totalPendingJobs = activeCount + waitingCount;
+
+    if (totalPendingJobs < MIN_ACTIVE_JOBS) {
+      console.log(YELLOW + `Job count (${totalPendingJobs}) below minimum threshold (${MIN_ACTIVE_JOBS}). Replenishing...`.toUpperCase() + RESET);
+
+      // Get all running tasks
+      const runningTasks = currentTasks.filter(task => task.running);
+
+      // Create new jobs from running tasks
+      const jobs = runningTasks.flatMap(task => [
+        ...(task.selectedMarketplaces.map(m => m.toLowerCase()).includes("opensea") ?
+          [{ name: OPENSEA_SCHEDULE, data: task, opts: { priority: COLLECTION_BID_PRIORITY.OPENSEA } }] : []),
+        ...(task.selectedMarketplaces.map(m => m.toLowerCase()).includes("blur") ?
+          [{ name: BLUR_SCHEDULE, data: task, opts: { priority: COLLECTION_BID_PRIORITY.BLUR } }] : []),
+        ...(task.selectedMarketplaces.map(m => m.toLowerCase()).includes("magiceden") ?
+          [{ name: MAGICEDEN_SCHEDULE, data: task, opts: { priority: COLLECTION_BID_PRIORITY.MAGICEDEN } }] : [])
+      ]);
+
+      if (jobs.length > 0) {
+        await processBulkJobs(jobs);
+        console.log(GREEN + `Replenished queue with ${jobs.length} new jobs`.toUpperCase() + RESET);
+      }
+    }
+  } catch (error) {
+    console.error(RED + 'Error replenishing jobs:' + RESET, error);
+  }
+}
+
+// Modify the monitorHealth function
 async function monitorHealth() {
   try {
     const used = process.memoryUsage();
     const memoryStats = {
-      rss: `${Math.round(used.rss / 1024 / 1024)}MB`,      // Resident Set Size
+      rss: `${Math.round(used.rss / 1024 / 1024)}MB`,
       heapTotal: `${Math.round(used.heapTotal / 1024 / 1024)}MB`,
       heapUsed: `${Math.round(used.heapUsed / 1024 / 1024)}MB`,
       external: `${Math.round(used.external / 1024 / 1024)}MB`,
@@ -168,6 +235,26 @@ async function monitorHealth() {
       delayed: await queue.getDelayedCount(),
       paused: (await queue.getJobs(["paused"])).length
     };
+
+    const totalPendingJobs = queueStats.active + queueStats.waiting;
+
+    // Check if we need to replenish jobs
+    if (totalPendingJobs < MIN_ACTIVE_JOBS) {
+      await replenishJobs();
+    }
+
+    // Modified queue management logic
+    if (queueStats.active > RATE_LIMIT * 2) {
+      console.log(YELLOW + 'Pausing queue temporarily due to high load...'.toUpperCase() + RESET);
+      await queue.pause();
+      // Resume after a short delay
+      setTimeout(async () => {
+        await queue.resume();
+        console.log(GREEN + 'Resuming queue after pause...'.toUpperCase() + RESET);
+      }, 5000);
+    } else {
+      await queue.resume();
+    }
 
     const totalJobs = Object.values(queueStats).reduce((a, b) => a + b, 0);
 
@@ -188,23 +275,14 @@ async function monitorHealth() {
     const isWorkerActive = worker.isRunning();
     console.log(BLUE + '\nWorker Status:' + RESET, isWorkerActive ? GREEN + 'Running' + RESET : RED + 'Stopped' + RESET);
 
-    // New logic to pause and resume the queue based on active job count
-    if (queueStats.active > RATE_LIMIT) {
-      console.log(YELLOW + 'Pausing the queue due to high active job count.'.toUpperCase() + RESET);
-      await queue.pause();
-    } else if (queueStats.active <= 32) {
-      console.log(GREEN + 'Resuming the queue as active job count is low.'.toUpperCase() + RESET);
-      await queue.resume();
-    }
-
-    console.log('\n=== End Health Monitor ===\n');
-
+    // ... rest of the monitoring code ...
   } catch (error) {
-    console.error(RED + 'Error monitoring health:', error, RESET);
+    console.error(RED + 'Error monitoring health:' + RESET, error);
   }
 }
 
-const HEALTH_CHECK_INTERVAL = 5000;
+// Increase the health check frequency
+const HEALTH_CHECK_INTERVAL = 3000; // Check every 3 seconds instead of 5
 setInterval(monitorHealth, HEALTH_CHECK_INTERVAL);
 
 async function cleanup() {
@@ -392,27 +470,54 @@ queueEvents.on('failed', ({ jobId, failedReason }) => {
   console.log(RED + `JOB ${jobId} FAILED: ${failedReason}` + RESET);
 });
 
+
+// Modify processBulkJobs to include job limiting
 async function processBulkJobs(jobs: any[]) {
+  // Limit total number of jobs
+  const limitedJobs = jobs.slice(0, MAX_TOTAL_JOBS);
+
   const BATCH_SIZE = RATE_LIMIT;
   const DELAY_MS = 1000;
-  const MAX_CONCURRENT_BATCHES = 3;
+  const MAX_CONCURRENT_BATCHES = 2; // Reduced from 3 to 2
 
-  const chunks = [];
-  for (let i = 0; i < jobs.length; i += BATCH_SIZE) {
-    chunks.push(jobs.slice(i, i + BATCH_SIZE));
+  if (!limitedJobs || limitedJobs.length === 0) {
+    console.log('No jobs to process');
+    return;
   }
 
-  console.log(`Processing ${jobs.length} jobs in ${chunks.length} batches`);
+  // Get current queue stats before adding more jobs
+  const activeCount = await queue.getActiveCount();
+  const waitingCount = await queue.getWaitingCount();
+  const totalPending = activeCount + waitingCount;
+
+  // Only add new jobs if we're below the maximum
+  if (totalPending >= MAX_BATCH_TOTAL) {
+    console.log(`Queue already has ${totalPending} jobs. Skipping new job addition.`);
+    return;
+  }
+
+  // Calculate how many more jobs we can add
+  const availableSlots = MAX_BATCH_TOTAL - totalPending;
+  const jobsToAdd = Math.min(limitedJobs.length, availableSlots);
+  const shuffledJobs = [...limitedJobs].slice(0, jobsToAdd).sort(() => Math.random() - 0.5);
+
+  const chunks = [];
+  for (let i = 0; i < shuffledJobs.length; i += BATCH_SIZE) {
+    chunks.push(shuffledJobs.slice(i, i + BATCH_SIZE));
+  }
+
+  console.log(`Processing ${shuffledJobs.length} jobs in ${chunks.length} batches`);
+  let successCount = 0;
+  let failureCount = 0;
 
   for (let i = 0; i < chunks.length; i += MAX_CONCURRENT_BATCHES) {
     const currentBatch = chunks.slice(i, i + MAX_CONCURRENT_BATCHES);
 
     await Promise.all(currentBatch.map(async (chunk, index) => {
       try {
-
         await new Promise(resolve => setTimeout(resolve, DELAY_MS));
 
-        await queue.addBulk(
+        const addedJobs = await queue.addBulk(
           chunk.map(job => ({
             ...job,
             opts: {
@@ -428,13 +533,45 @@ async function processBulkJobs(jobs: any[]) {
             }
           }))
         );
+
+        // Check if we've added enough jobs to start processing
+        const activeCount = await queue.getActiveCount();
+        if (activeCount >= 64) {
+          console.log(GREEN + 'Sufficient jobs in queue. Ensuring worker is processing...'.toUpperCase() + RESET);
+          await queue.resume();
+        }
+
+        successCount += addedJobs.length;
+        console.log(`Successfully added batch ${i + index} (${addedJobs.length} jobs)`);
       } catch (error) {
+        failureCount += chunk.length;
         console.error(`Error processing batch ${i + index}:`, error);
+        // Optionally retry failed batch
+        await new Promise(resolve => setTimeout(resolve, DELAY_MS * 2));
+        try {
+          const retryJobs = await queue.addBulk(chunk.map(job => ({
+            ...job,
+            opts: {
+              ...job.opts,
+              removeOnComplete: true,
+              removeOnFail: true,
+              attempts: 1,
+              timeout: 45000,
+            }
+          })));
+          successCount += retryJobs.length;
+          failureCount -= retryJobs.length;
+          console.log(`Retry successful for batch ${i + index} (${retryJobs.length} jobs)`);
+        } catch (retryError) {
+          console.error(`Retry failed for batch ${i + index}:`, retryError);
+        }
       }
     }));
 
     await new Promise(resolve => setTimeout(resolve, DELAY_MS));
   }
+
+  console.log(`Bulk processing complete. Success: ${successCount}, Failed: ${failureCount}`);
 }
 
 
@@ -527,6 +664,11 @@ async function stopTask(task: ITask, start: boolean, marketplace?: string) {
 
   try {
     await updateTaskStatus(task, start, marketplace);
+    await Promise.all([
+      redis.del(`opensea:${taskId}:count`),
+      redis.del(`magiceden:${taskId}:count`),
+      redis.del(`blur:${taskId}:count`)
+    ]);
 
     const cleanupOperations = [
       {
@@ -565,9 +707,6 @@ async function stopTask(task: ITask, start: boolean, marketplace?: string) {
     }
 
     const residualBids = await checkForResidualBids(task, marketplace);
-
-    console.log({ residualBids });
-
     if (residualBids.length > 0) {
       console.warn(YELLOW + `Found ${residualBids.length} residual bids after stopping task` + RESET);
       try {
@@ -610,6 +749,10 @@ async function checkForResidualBids(task: ITask, marketplace?: string): Promise<
 
 async function removePendingAndWaitingBids(task: ITask, marketplace?: string) {
   try {
+    // Pause the queue before removing jobs
+    await queue.pause();
+    console.log(YELLOW + 'Queue paused while removing pending bids...'.toUpperCase() + RESET);
+
     const jobs = await queue.getJobs(['waiting', 'delayed', 'failed', 'paused', 'prioritized', 'repeat', 'wait', 'waiting', 'waiting-children']);
     let jobnames: string[] = [OPENSEA_SCHEDULE, OPENSEA_TRAIT_BID, OPENSEA_TOKEN_BID, MAGICEDEN_SCHEDULE, MAGICEDEN_TRAIT_BID, MAGICEDEN_TOKEN_BID, BLUR_SCHEDULE, BLUR_TRAIT_BID]
 
@@ -641,9 +784,15 @@ async function removePendingAndWaitingBids(task: ITask, marketplace?: string) {
 
     if (relatedJobs.length > 0) {
       console.log(RED + `Removed ${relatedJobs.length} pending and waiting bids for task: ${task.contract.slug}`.toUpperCase() + RESET);
-
     }
+
+    // Resume the queue after removing jobs
+    await queue.resume();
+    console.log(GREEN + 'Queue resumed after removing pending bids'.toUpperCase() + RESET);
   } catch (error) {
+    // Make sure to resume the queue even if there's an error
+    await queue.resume();
+    console.error(RED + `Error removing pending bids: ${error}` + RESET);
   }
 }
 
@@ -668,6 +817,10 @@ async function waitForRunningJobsToComplete(task: ITask, marketplace?: string) {
         jobnames = [OPENSEA_SCHEDULE, OPENSEA_TRAIT_BID, OPENSEA_TOKEN_BID, MAGICEDEN_SCHEDULE, MAGICEDEN_TRAIT_BID, MAGICEDEN_TOKEN_BID, BLUR_SCHEDULE, BLUR_TRAIT_BID]
     }
 
+    // Pause the queue
+    console.log(YELLOW + 'Pausing queue while waiting for running jobs to complete...'.toUpperCase() + RESET);
+    await queue.pause();
+
     while (true) {
       const activeJobs = await queue.getJobs(['active']);
       const relatedJobs = activeJobs?.filter(job => {
@@ -683,8 +836,15 @@ async function waitForRunningJobsToComplete(task: ITask, marketplace?: string) {
       }
       await new Promise(resolve => setTimeout(resolve, checkInterval));
     }
+
+    // Resume the queue
+    console.log(GREEN + 'Resuming queue after running jobs completed...'.toUpperCase() + RESET);
+    await queue.resume();
+
   } catch (error: any) {
     console.error(RED + `Error waiting for running jobs to complete for task ${task.contract.slug}: ${error.message}` + RESET);
+    // Ensure the queue is resumed even if an error occurs
+    await queue.resume();
   }
 }
 
@@ -790,7 +950,7 @@ async function cancelOpenseaBids(bids: string[], privateKey: string, slug: strin
   const cancelData = bidData.map(bid => ({
     name: CANCEL_OPENSEA_BID,
     data: { orderHash: bid, privateKey },
-    opts: { priority: 1 }
+    opts: { priority: CANCEL_PRIORITY.OPENSEA }
   }));
   if (cancelData.length) {
     await processBulkJobs(cancelData);
@@ -839,7 +999,7 @@ async function cancelMagicedenBids(orderKeys: string[], privateKey: string, slug
   for (let i = 0; i < extractedOrderIds.length; i += 1000) {
     const batch = extractedOrderIds.slice(i, i + 1000);
     console.log(RED + `DELETING  batch ${Math.floor(i / 1000) + 1} of ${Math.ceil(extractedOrderIds.length / 1000)} (${batch.length} MAGICEDEN BIDS)`.toUpperCase() + RESET);
-    await queue.add(CANCEL_MAGICEDEN_BID, { orderIds: batch, privateKey }, { priority: 1 });
+    await queue.add(CANCEL_MAGICEDEN_BID, { orderIds: batch, privateKey }, { priority: CANCEL_PRIORITY.MAGICEDEN });
   }
   const offerKeys = await redis.keys(`*:${taskId}:magiceden:${slug}:*`);
   if (offerKeys.length) {
@@ -866,9 +1026,9 @@ async function cancelBlurBids(bids: any[], privateKey: string, slug: string, tas
     return {
       name: CANCEL_BLUR_BID,
       data: { payload: payload, privateKey },
-      opts: { priority: 1 }
+      opts: { priority: CANCEL_PRIORITY.BLUR }
     }
-  }).filter((item): item is { name: string; data: any; opts: { priority: number } } => item !== undefined);
+  }).filter((item): item is { name: string; data: any; opts: { priority: 1 } } => item !== undefined);
   if (cancelData.length) {
     await processBulkJobs(cancelData);
   }
@@ -987,6 +1147,8 @@ async function handleOutgoingMarketplace(marketplace: string, task: ITask) {
   try {
     const config = getMarketplaceConfig(marketplace.toLowerCase());
     if (!config) return;
+    const countKey = `${marketplace}:${task._id}:count`;
+    await redis.del(countKey);
 
     await stopTask(task, false, marketplace);
 
@@ -1509,6 +1671,8 @@ async function handleOpenseaCounterbid(data: any, task: ITask) {
         creatorFees,
         collectionDetails.enforceCreatorFee,
         expiry,
+        undefined,
+        undefined,
       );
 
       console.log(GREEN + '-------------------------------------------------------------------------------------------------------------------------' + RESET);
@@ -2667,4 +2831,3 @@ queueEvents.on('failed', ({ jobId, failedReason }) => {
 queueEvents.on('stalled', ({ jobId }) => {
   console.warn(YELLOW + `Job ${jobId} stalled` + RESET);
 });
-
