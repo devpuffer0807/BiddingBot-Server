@@ -16,7 +16,6 @@ import Wallet from "./models/wallet.model";
 import redisClient from "./utils/redis";
 import { WETH_CONTRACT_ADDRESS, WETH_MIN_ABI } from "./constants";
 import { constants, Contract, ethers, Wallet as Web3Wallet } from "ethers";
-import { AbortController } from 'node-abort-controller';
 
 const SEAPORT = '0x1e0049783f008a0085193e00003d00cd54003c71';
 const redis = redisClient.getClient()
@@ -316,8 +315,6 @@ async function fetchCurrentTasks() {
     const wallets = (await Wallet.find({}).lean()).map((wallet: any) => wallet.address);
 
     walletsArr.push(...wallets);
-    console.log(`Found ${wallets.length} wallets`);
-
     const formattedTasks = tasks.map((task) => ({
       ...task,
       _id: task._id.toString(),
@@ -328,23 +325,25 @@ async function fetchCurrentTasks() {
     currentTasks.push(...formattedTasks);
 
     console.log('Creating initial jobs...');
-    const jobs = formattedTasks.flatMap(task =>
-      task.running && task.selectedMarketplaces.map(m => m.toLowerCase()).includes("opensea")
-        ? [{ name: OPENSEA_SCHEDULE, data: task, opts: { priority: COLLECTION_BID_PRIORITY.OPENSEA } }]
-        : []
-    ).concat(
-      formattedTasks.flatMap(task =>
-        task.running && task.selectedMarketplaces.map(m => m.toLowerCase()).includes("blur")
-          ? [{ name: BLUR_SCHEDULE, data: task, opts: { priority: COLLECTION_BID_PRIORITY.BLUR } }]
+    const jobs = formattedTasks
+      .filter((task) => task.running)
+      .flatMap(task =>
+        task.running && task.selectedMarketplaces.map(m => m.toLowerCase()).includes("opensea")
+          ? [{ name: OPENSEA_SCHEDULE, data: task, opts: { priority: COLLECTION_BID_PRIORITY.OPENSEA } }]
           : []
-      )
-    ).concat(
-      formattedTasks.flatMap(task =>
-        task.running && task.selectedMarketplaces.map(m => m.toLowerCase()).includes("magiceden")
-          ? [{ name: MAGICEDEN_SCHEDULE, data: task, opts: { priority: COLLECTION_BID_PRIORITY.MAGICEDEN } }]
-          : []
-      )
-    );
+      ).concat(
+        formattedTasks.flatMap(task =>
+          task.running && task.selectedMarketplaces.map(m => m.toLowerCase()).includes("blur")
+            ? [{ name: BLUR_SCHEDULE, data: task, opts: { priority: COLLECTION_BID_PRIORITY.BLUR } }]
+            : []
+        )
+      ).concat(
+        formattedTasks.flatMap(task =>
+          task.running && task.selectedMarketplaces.map(m => m.toLowerCase()).includes("magiceden")
+            ? [{ name: MAGICEDEN_SCHEDULE, data: task, opts: { priority: COLLECTION_BID_PRIORITY.MAGICEDEN } }]
+            : []
+        )
+      );
 
     console.log(`Created ${jobs.length} initial jobs`);
     await processBulkJobs(jobs);
@@ -474,13 +473,12 @@ queueEvents.on('failed', ({ jobId, failedReason }) => {
 // Modify processBulkJobs to include job limiting
 async function processBulkJobs(jobs: any[]) {
   // Limit total number of jobs
-  const limitedJobs = jobs.slice(0, MAX_TOTAL_JOBS);
 
   const BATCH_SIZE = RATE_LIMIT;
   const DELAY_MS = 1000;
   const MAX_CONCURRENT_BATCHES = 2; // Reduced from 3 to 2
 
-  if (!limitedJobs || limitedJobs.length === 0) {
+  if (!jobs || jobs.length === 0) {
     console.log('No jobs to process');
     return;
   }
@@ -498,8 +496,8 @@ async function processBulkJobs(jobs: any[]) {
 
   // Calculate how many more jobs we can add
   const availableSlots = MAX_BATCH_TOTAL - totalPending;
-  const jobsToAdd = Math.min(limitedJobs.length, availableSlots);
-  const shuffledJobs = [...limitedJobs].slice(0, jobsToAdd).sort(() => Math.random() - 0.5);
+  const jobsToAdd = Math.min(jobs.length, availableSlots);
+  const shuffledJobs = [...jobs].slice(0, jobsToAdd).sort(() => Math.random() - 0.5);
 
   const chunks = [];
   for (let i = 0; i < shuffledJobs.length; i += BATCH_SIZE) {
@@ -546,25 +544,6 @@ async function processBulkJobs(jobs: any[]) {
       } catch (error) {
         failureCount += chunk.length;
         console.error(`Error processing batch ${i + index}:`, error);
-        // Optionally retry failed batch
-        await new Promise(resolve => setTimeout(resolve, DELAY_MS * 2));
-        try {
-          const retryJobs = await queue.addBulk(chunk.map(job => ({
-            ...job,
-            opts: {
-              ...job.opts,
-              removeOnComplete: true,
-              removeOnFail: true,
-              attempts: 1,
-              timeout: 45000,
-            }
-          })));
-          successCount += retryJobs.length;
-          failureCount -= retryJobs.length;
-          console.log(`Retry successful for batch ${i + index} (${retryJobs.length} jobs)`);
-        } catch (retryError) {
-          console.error(`Retry failed for batch ${i + index}:`, retryError);
-        }
       }
     }));
 
@@ -653,14 +632,10 @@ async function startTask(task: ITask, start: boolean) {
   }
 }
 
-const taskAbortControllers = new Map<string, AbortController>();
 
 async function stopTask(task: ITask, start: boolean, marketplace?: string) {
   const taskId = task._id.toString();
   const STOP_TIMEOUT = 120000;
-
-  const abortController = new AbortController();
-  taskAbortControllers.set(taskId, abortController);
 
   try {
     await updateTaskStatus(task, start, marketplace);
@@ -725,7 +700,6 @@ async function stopTask(task: ITask, start: boolean, marketplace?: string) {
     console.error(RED + `Error stopping task ${task.contract.slug}:` + RESET, error);
     throw error;
   } finally {
-    taskAbortControllers.delete(taskId);
   }
 }
 
@@ -755,7 +729,6 @@ async function removePendingAndWaitingBids(task: ITask, marketplace?: string) {
 
     const jobs = await queue.getJobs(['waiting', 'delayed', 'failed', 'paused', 'prioritized', 'repeat', 'wait', 'waiting', 'waiting-children']);
     let jobnames: string[] = [OPENSEA_SCHEDULE, OPENSEA_TRAIT_BID, OPENSEA_TOKEN_BID, MAGICEDEN_SCHEDULE, MAGICEDEN_TRAIT_BID, MAGICEDEN_TOKEN_BID, BLUR_SCHEDULE, BLUR_TRAIT_BID]
-
 
     switch (marketplace?.toLowerCase()) {
       case OPENSEA.toLowerCase():
@@ -2438,6 +2411,44 @@ async function bulkCancelMagicedenBid(data: { orderIds: string[], privateKey: st
     console.log(error);
   }
 }
+
+async function validateBidCount() {
+  try {
+    console.log('UPDATING TASKS BIDCOUNT');
+
+    for (const task of currentTasks) {
+      const keys = {
+        counts: {
+          opensea: `opensea:${task._id}:count`,
+          blur: `blur:${task._id}:count`,
+          magiceden: `magiceden:${task._id}:count`
+        },
+        patterns: {
+          opensea: `*:${task._id}:opensea:order:${task.contract.slug}:*`,
+          magiceden: `*:${task._id}:magiceden:order:${task.contract.slug}:*`,
+          blur: `*:${task._id}:blur:order:${task.contract.slug}:*`
+        }
+      };
+
+      const [openseaBids, magicedenBids, blurBids] = await Promise.all([
+        redis.keys(keys.patterns.opensea),
+        redis.keys(keys.patterns.magiceden),
+        redis.keys(keys.patterns.blur)
+      ]);
+
+      await Promise.all([
+        redis.set(keys.counts.opensea, openseaBids.length),
+        redis.set(keys.counts.magiceden, magicedenBids.length),
+        redis.set(keys.counts.blur, blurBids.length)
+      ]);
+    }
+  } catch (error) {
+    console.log(error);
+  }
+}
+
+setInterval(validateBidCount, 60000);
+
 
 async function blukCancelBlurBid(data: BlurCancelPayload) {
   try {
