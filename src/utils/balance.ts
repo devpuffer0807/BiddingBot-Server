@@ -1,6 +1,7 @@
 import { ethers } from "ethers";
 import { Redis } from 'ioredis';
 import { axiosInstance, limiter } from "../init";
+import { DistributedLockManager } from './lock';
 
 // Constants
 const CACHE_EXPIRY_SECONDS = 60;
@@ -22,48 +23,16 @@ interface Dependencies {
   provider: ethers.providers.Provider;
 }
 
-class BalanceLockManager {
-  private balanceLocks: Map<string, boolean>;
-  private lockQueue: Set<string>;
-
-  constructor() {
-    this.balanceLocks = new Map();
-    this.lockQueue = new Set();
-  }
-
-  private getLockKey(address: string, balanceType: BalanceType): string {
-    return `${balanceType}_${address}`;
-  }
-
-  async acquireLock(address: string, balanceType: BalanceType): Promise<boolean> {
-    const lockKey = this.getLockKey(address, balanceType);
-
-    if (this.balanceLocks.get(lockKey)) {
-      if (this.lockQueue.size >= MAX_QUEUE_SIZE) {
-        return false;
-      }
-      this.lockQueue.add(lockKey);
-      return false;
-    }
-
-    this.balanceLocks.set(lockKey, true);
-    this.lockQueue.delete(lockKey);
-    return true;
-  }
-
-  releaseLock(address: string, balanceType: BalanceType): void {
-    const lockKey = this.getLockKey(address, balanceType);
-    this.balanceLocks.delete(lockKey);
-  }
-}
-
 class BalanceChecker {
   private deps: Dependencies;
-  private lockManager: BalanceLockManager;
+  private lockManager: DistributedLockManager;
 
   constructor(deps: Dependencies) {
     this.deps = deps;
-    this.lockManager = new BalanceLockManager();
+    this.lockManager = new DistributedLockManager(deps.redis, {
+      lockPrefix: 'balance_lock:',
+      defaultTTLSeconds: CACHE_EXPIRY_SECONDS
+    });
   }
 
   private async getCachedBalance(cacheKey: string): Promise<number | null> {
@@ -91,16 +60,12 @@ class BalanceChecker {
 
   async getWethBalance(address: string): Promise<number> {
     const cacheKey = `weth_balance:${address}`;
-    let cachedBalance = null;
+    let cachedBalance = await this.getCachedBalance(cacheKey);
 
-    try {
-      cachedBalance = await this.getCachedBalance(cacheKey);
-
-      if (!await this.lockManager.acquireLock(address, 'weth') && cachedBalance !== null) {
-        return cachedBalance;
-      }
-
-      try {
+    const result = await this.lockManager.withLock(
+      `weth_${address}`,
+      async () => {
+        // Check cache again after acquiring lock
         const cachedBalanceAfterLock = await this.getCachedBalance(cacheKey);
         if (cachedBalanceAfterLock !== null) {
           return cachedBalanceAfterLock;
@@ -152,16 +117,10 @@ class BalanceChecker {
             await new Promise(resolve => setTimeout(resolve, backoffTime));
           }
         }
-      } catch (error) {
-        console.error("Error in WETH balance fetch:", error);
-        return cachedBalance ?? 0;
       }
-    } catch (error) {
-      this.lockManager.releaseLock(address, 'weth');
-      console.error("Error fetching WETH balance:", error);
-      return cachedBalance ?? 0;
-    }
-    return cachedBalance ?? 0;
+    );
+
+    return result ?? (cachedBalance ?? 0);
   }
 
   private extractBalanceFromResponse(data: any, cachedBalance: number | null = 0): number {
@@ -181,16 +140,12 @@ class BalanceChecker {
 
   async getBethBalance(address: string): Promise<number> {
     const cacheKey = `beth_balance:${address}`;
-    let cachedBalance = null;
+    let cachedBalance = await this.getCachedBalance(cacheKey);
 
-    try {
-      cachedBalance = await this.getCachedBalance(cacheKey);
-
-      if (!await this.lockManager.acquireLock(address, 'beth') && cachedBalance !== null) {
-        return cachedBalance;
-      }
-
-      try {
+    const result = await this.lockManager.withLock(
+      `beth_${address}`,
+      async () => {
+        // Check cache again after acquiring lock
         const cachedBalanceAfterLock = await this.getCachedBalance(cacheKey);
         if (cachedBalanceAfterLock !== null) {
           return cachedBalanceAfterLock;
@@ -220,16 +175,10 @@ class BalanceChecker {
             await new Promise(resolve => setTimeout(resolve, backoffTime));
           }
         }
-      } finally {
-        this.lockManager.releaseLock(address, 'beth');
       }
-    } catch (error) {
-      this.lockManager.releaseLock(address, 'beth');
-      console.error("Error fetching BETH balance:", error);
-      return cachedBalance ?? 0;
-    }
+    );
 
-    return 0;
+    return result ?? (cachedBalance ?? 0);
   }
 }
 

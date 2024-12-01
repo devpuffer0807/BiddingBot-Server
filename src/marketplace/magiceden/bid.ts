@@ -4,9 +4,11 @@ import { config } from "dotenv";
 import { currentTasks, MAGENTA } from "../..";
 import redisClient from "../../utils/redis";
 import { createBalanceChecker } from "../../utils/balance";
+import { DistributedLockManager } from '../../utils/lock';
 
 const RED = '\x1b[31m';
 const RESET = '\x1b[0m';
+
 
 config()
 
@@ -22,6 +24,11 @@ const deps = {
 };
 
 const balanceChecker = createBalanceChecker(deps);
+
+const lockManager = new DistributedLockManager(redis, {
+  lockPrefix: 'magiceden:fetch:',
+  defaultTTLSeconds: 30
+});
 
 /**
  * Places a bid on Magic Eden.
@@ -300,7 +307,7 @@ async function sendSignedOrderData(taskId: string, offerPrice: string | number, 
       await redis.setex(key, expiry, order);
       await redis.setex(offerKey, expiry, offerPrice.toString());
       const countKey = `magiceden:${taskId}:count`;
-      
+
       await redis.incr(countKey);
 
 
@@ -562,75 +569,89 @@ export async function fetchMagicEdenOffer(type: "COLLECTION" | "TRAIT" | "TOKEN"
 
 
 export async function fetchMagicEdenCollectionStats(contractAddress: string) {
-  const queryParams = {
-    chain: 'ethereum',
-    collectionId: contractAddress
-  };
-  try {
-    const { data } = await limiter.schedule(() => axiosInstance.get(
-      'https://api.nfttools.website/magiceden_stats/collection_stats/stats',
-      {
-        params: queryParams,
-        headers: {
-          'X-NFT-API-Key': API_KEY
-        }
-      }
-    ));
+  const lockKey = `stats:${contractAddress}`;
 
-    return +data?.floorPrice?.amount || 0
-  } catch (error) {
-    console.error('Error fetching Magic Eden collection stats:', error);
-    return 0
-  }
+  return await lockManager.withLock(
+    lockKey,
+    async () => {
+      const queryParams = {
+        chain: 'ethereum',
+        collectionId: contractAddress
+      };
+      try {
+        const { data } = await limiter.schedule(() => axiosInstance.get(
+          'https://api.nfttools.website/magiceden_stats/collection_stats/stats',
+          {
+            params: queryParams,
+            headers: {
+              'X-NFT-API-Key': API_KEY
+            }
+          }
+        ));
+
+        return +data?.floorPrice?.amount || 0
+      } catch (error) {
+        console.error('Error fetching Magic Eden collection stats:', error);
+        return 0
+      }
+    },
+    15 // Lock TTL in seconds
+  );
 }
 
 export async function fetchMagicEdenTokens(collectionId: string, limit?: number) {
-  const startTime = Date.now();
-  const params: any = {
-    excludeSpam: true,
-    excludeBurnt: true,
-    collection: collectionId,
-    sortBy: "floorAskPrice",
-    sortDirection: "asc",
-    limit: 50, // Set limit to 50 for each request
-    excludeSources: ["nftx.io", "sudoswap.xyz"],
-    normalizeRoyalties: false,
-    continuation: null
-  };
-  const url = `https://api.nfttools.website/magiceden/v3/rtp/ethereum/tokens/v7`;
-  const allTokens: number[] = [];
-  try {
-    let totalFetched = 0;
-    if (!limit) return
-    do {
+  const lockKey = `tokens:${collectionId}`;
 
-      const { data } = await limiter.schedule(() => axiosInstance.get<TokenResponseMagiceden>(
-        url,
-        {
-          headers: {
-            accept: "application/json",
-            "X-NFT-API-Key": API_KEY,
-          },
-          params
-        }
-      ))
+  return await lockManager.withLock(
+    lockKey,
+    async () => {
+      const startTime = Date.now();
+      const params: any = {
+        excludeSpam: true,
+        excludeBurnt: true,
+        collection: collectionId,
+        sortBy: "floorAskPrice",
+        sortDirection: "asc",
+        limit: 50,
+        excludeSources: ["nftx.io", "sudoswap.xyz"],
+        normalizeRoyalties: false,
+        continuation: null
+      };
+      const url = `https://api.nfttools.website/magiceden/v3/rtp/ethereum/tokens/v7`;
+      const allTokens: number[] = [];
+      try {
+        let totalFetched = 0;
+        if (!limit) return
+        do {
+          const { data } = await limiter.schedule(() => axiosInstance.get<TokenResponseMagiceden>(
+            url,
+            {
+              headers: {
+                accept: "application/json",
+                "X-NFT-API-Key": API_KEY,
+              },
+              params
+            }
+          ))
 
-      const tokens = data.tokens.map((item) => +item.token.tokenId);
-      allTokens.push(...tokens);
-      totalFetched += tokens.length;
-      params.continuation = data.continuation;
+          const tokens = data.tokens.map((item) => +item.token.tokenId);
+          allTokens.push(...tokens);
+          totalFetched += tokens.length;
+          params.continuation = data.continuation;
 
-      console.log(MAGENTA, `[MAGICEDEN] Fetched ${totalFetched}/${limit} Bottom Listed Tokens`.toUpperCase(), RESET);
+          console.log(MAGENTA, `[MAGICEDEN] Fetched ${totalFetched}/${limit} Bottom Listed Tokens`.toUpperCase(), RESET);
 
-    } while (params.continuation && totalFetched < limit);
+        } while (params.continuation && totalFetched < limit);
 
-    return allTokens.slice(0, limit);
-  } catch (error) {
-    console.error("Error fetching Magic Eden tokens:", error);
-    return []
-  }
+        return allTokens.slice(0, limit);
+      } catch (error) {
+        console.error("Error fetching Magic Eden tokens:", error);
+        return []
+      }
+    },
+    60 // Lock TTL in seconds - longer for token fetching since it's paginated
+  );
 }
-
 
 function getExpiry(bidDuration: { value: number; unit: string }) {
   try {

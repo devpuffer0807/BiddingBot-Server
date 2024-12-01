@@ -36,7 +36,6 @@ This project is a Node.js server that interacts with various NFT marketplaces, a
 4. **Set up environment variables:**
    Create a `.env` file in the root directory and add the following variables:
    ```env
-   OPENSEA_API_KEY=<your_opensea_api_key>
    MONGODB_URI=<your_mongodb_uri>
    REDIS_URI=redis://localhost:6379
    PORT=3003
@@ -78,7 +77,6 @@ npm run dev
 
 Make sure to set the following environment variables in your `.env` file:
 
-- `OPENSEA_API_KEY`: Your OpenSea API key.
 - `MONGODB_URI`: Connection string for MongoDB.
 - `REDIS_URI`: Connection string for Redis.
 - `PORT`: Port on which the server will run (default is 3003).

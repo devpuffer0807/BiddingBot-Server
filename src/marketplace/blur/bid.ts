@@ -5,6 +5,7 @@ import { BLUR_SCHEDULE, BLUR_TRAIT_BID, currentTasks, queue, RESET } from "../..
 import { config } from "dotenv";
 import { createBalanceChecker } from "../../utils/balance";
 import { Queue } from "bullmq";
+import { DistributedLockManager } from "../../utils/lock";
 const RED = '\x1b[31m';
 
 
@@ -25,6 +26,12 @@ const deps = {
 const balanceChecker = createBalanceChecker(deps);
 
 const provider = new ethers.providers.AlchemyProvider('mainnet', ALCHEMY_API_KEY);
+
+const lockManager = new DistributedLockManager(redis, {
+  lockPrefix: 'blur:lock:',
+  defaultTTLSeconds: 60 // 1 minute lock timeout
+});
+
 /**
  * Creates an offer on Blur.
  * @param walletAddress - The wallet address of the offerer.
@@ -184,38 +191,44 @@ export async function bidOnBlur(
  */
 async function getAccessToken(url: string, private_key: string): Promise<string | undefined> {
   const wallet = new Wallet(private_key, provider);
-  const options = { walletAddress: wallet.address };
+  const lockKey = `auth:${wallet.address}`;
 
-  const headers = {
-    'content-type': 'application/json',
-    'X-NFT-API-Key': API_KEY
-  };
-
-  try {
-    const key = `blur-access-token-${wallet.address}`
-    const cachedToken = await redis.get(key);
-    if (cachedToken) {
-      return cachedToken;
-    }
-    let response: any = await limiter.schedule(() => axiosInstance
-      .post(`${url}/auth/challenge`, options, { headers }));
-    const message = response.data.message;
-    const signature = await wallet.signMessage(message);
-    const data = {
-      message: message,
-      walletAddress: wallet.address,
-      expiresOn: response.data.expiresOn,
-      hmac: response.data.hmac,
-      signature: signature
+  return await lockManager.withLock(lockKey, async () => {
+    const options = { walletAddress: wallet.address };
+    const headers = {
+      'content-type': 'application/json',
+      'X-NFT-API-Key': API_KEY
     };
-    response = await limiter.schedule(() => axiosInstance
-      .post(`${url}/auth/login`, data, { headers }));
-    const accessToken = response.data.accessToken;
-    await redis.set(key, accessToken, 'EX', 2 * 60 * 60);
-    return accessToken;
-  } catch (error: any) {
-    console.error("getAccessToken Error:", error.response?.data || error.message);
-  }
+
+    try {
+      const key = `blur-access-token-${wallet.address}`
+      const cachedToken = await redis.get(key);
+      if (cachedToken) {
+        return cachedToken;
+      }
+
+      let response: any = await limiter.schedule(() => axiosInstance
+        .post(`${url}/auth/challenge`, options, { headers }));
+      const message = response.data.message;
+      const signature = await wallet.signMessage(message);
+      const data = {
+        message: message,
+        walletAddress: wallet.address,
+        expiresOn: response.data.expiresOn,
+        hmac: response.data.hmac,
+        signature: signature
+      };
+      response = await limiter.schedule(() => axiosInstance
+        .post(`${url}/auth/login`, data, { headers }));
+      const accessToken = response.data.accessToken;
+      await redis.set(key, accessToken, 'EX', 5 * 60);
+
+      return accessToken;
+    } catch (error: any) {
+      console.error("getAccessToken Error:", error.response?.data || error.message);
+      return undefined;
+    }
+  });
 };
 
 /**
@@ -299,12 +312,6 @@ async function submitBidToBlur(
 
     const successMessage = traits ? `🎉 TRAIT OFFER POSTED TO BLUR SUCCESSFULLY FOR: ${slug.toUpperCase()} 🎉 TRAIT: ${traits}` : `🎉 OFFER POSTED TO BLUR SUCCESSFULLY FOR: ${slug.toUpperCase()} 🎉`
 
-
-    running = currentTasks.find((task) => task.contract.slug.toLowerCase() === slug.toLowerCase())
-    if (!running) {
-      await cancelBlurBid(cancelPayload)
-    }
-
     if (offers.errors) {
       console.error('Error:', JSON.stringify(offers.errors));
     } else {
@@ -376,7 +383,7 @@ export async function fetchBlurBid(collection: string, criteriaType: 'TRAIT' | '
           }
         })
       },
-      headers: {  // Moved headers into the same object
+      headers: {
         'content-type': 'application/json',
         'X-NFT-API-Key': API_KEY,
       }
@@ -386,22 +393,26 @@ export async function fetchBlurBid(collection: string, criteriaType: 'TRAIT' | '
   } catch (error: any) {
     console.error("Error fetching executable bids:", error.response?.data || error.message);
   }
-} 3
+}
 
 export async function fetchBlurCollectionStats(slug: string) {
-  const URL = `https://api.nfttools.website/blur/v1/collections/${slug}`;
-  try {
-    const { data } = await limiter.schedule(() => axiosInstance.get(URL, {
-      headers: {
-        'content-type': 'application/json',
-        'X-NFT-API-Key': API_KEY,
-      }
-    }));
-    return data?.collection?.floorPrice?.amount || 0
-  } catch (error: any) {
-    console.error("Error fetching collection data:", error.response?.data || error.message);
-    return 0
-  }
+  const lockKey = `blur:stats:${slug}`;
+
+  return await lockManager.withLock(lockKey, async () => {
+    const URL = `https://api.nfttools.website/blur/v1/collections/${slug}`;
+    try {
+      const { data } = await limiter.schedule(() => axiosInstance.get(URL, {
+        headers: {
+          'content-type': 'application/json',
+          'X-NFT-API-Key': API_KEY,
+        }
+      }));
+      return data?.collection?.floorPrice?.amount || 0
+    } catch (error: any) {
+      console.error("Error fetching collection data:", error.response?.data || error.message);
+      return 0
+    }
+  });
 }
 
 
