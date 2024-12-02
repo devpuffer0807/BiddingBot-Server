@@ -129,11 +129,11 @@ const worker = new Worker(
   },
   {
     connection: redis,
-    concurrency: RATE_LIMIT,
-    // limiter: {
-    //   max: RATE_LIMIT,
-    //   duration: 1000
-    // }
+    concurrency: RATE_LIMIT * 5,
+    limiter: {
+      max: RATE_LIMIT * 5,
+      duration: 1000
+    }
   }
 );
 
@@ -316,7 +316,7 @@ async function fetchCurrentTasks() {
       );
 
     console.log(`Created ${jobs.length} initial jobs`);
-    await processBulkJobs(jobs);
+    await processBulkJobs(jobs, true);
     console.log(GREEN + '=== Task Initialization Complete ===\n' + RESET);
   } catch (error) {
     console.error(RED + 'Error fetching current tasks:', error, RESET);
@@ -441,7 +441,32 @@ queueEvents.on('failed', ({ jobId, failedReason }) => {
 const DELAY_MS = 1000;
 const MAX_CONCURRENT_BATCHES = 4
 
-async function processBulkJobs(jobs: any[]) {
+
+async function createJobKey(job: Job) {
+  let uniqueKey;
+  switch (job.name) {
+    case 'OPENSEA_TRAIT_BID':
+    case 'BLUR_TRAIT_BID':
+      uniqueKey = job.data.trait;
+      break;
+    case 'MAGICEDEN_TRAIT_BID':
+      uniqueKey = JSON.stringify(job.data.trait);
+      break;
+    case 'OPENSEA_TOKEN_BID':
+      uniqueKey = JSON.stringify(job.data.asset);
+      break;
+    case 'MAGICEDEN_TOKEN_BID':
+      uniqueKey = job.data.tokenId;
+      break;
+    default:
+      uniqueKey = 'collection';
+  }
+  const baseKey = `${job?.data?._id}: ${job?.data?.contract?.slug || job?.data?.slug}`
+  const key = `${baseKey}${uniqueKey}`
+  return key
+}
+
+async function processBulkJobs(jobs: any[], createKey = false) {
   if (!jobs || jobs.length === 0) {
     return;
   }
@@ -465,6 +490,7 @@ async function processBulkJobs(jobs: any[]) {
       try {
         await queue.addBulk(
           batch.map((job) => ({
+            ...(createKey && { jobId: createJobKey(job) }),
             name: job.name,
             data: job.data,
             opts: {
@@ -500,7 +526,7 @@ async function processNewTask(task: ITask) {
     ];
 
     if (jobs.length > 0) {
-      await processBulkJobs(jobs);
+      await processBulkJobs(jobs, true);
       console.log(`Successfully added ${jobs.length} jobs to the queue.`);
     }
     subscribeToCollections([task]);
@@ -561,7 +587,7 @@ async function startTask(task: ITask, start: boolean) {
       ...(task.selectedMarketplaces.map(m => m.toLowerCase()).includes("magiceden") ? [{ name: MAGICEDEN_SCHEDULE, data: { ...task, running: start }, opts: { priority: COLLECTION_BID_PRIORITY.MAGICEDEN } }] : []),
     ];
 
-    await processBulkJobs(jobs);
+    await processBulkJobs(jobs, true);
   } catch (error) {
     console.error(RED + `Error starting task ${task.contract.slug}:` + RESET, error);
     throw error;
@@ -1836,7 +1862,7 @@ async function processOpenseaScheduledBid(task: ITask) {
           opts: { priority: TOKEN_BID_PRIORITY.OPENSEA }
         }));
 
-      if (task.running) await processBulkJobs(jobs);
+      if (task.running) await processBulkJobs(jobs, true);
 
       console.log(`ADDED ${jobs.length} ${task.contract.slug} OPENSEA TOKEN BID JOBS TO QUEUE`);
     } else if (traitBid && collectionDetails.trait_offers_enabled) {
@@ -1860,7 +1886,7 @@ async function processOpenseaScheduledBid(task: ITask) {
         opts: { priority: TRAIT_BID_PRIORITY.OPENSEA }
       }));
 
-      if (task.running) await processBulkJobs(traitJobs);
+      if (task.running) await processBulkJobs(traitJobs, true);
 
       console.log(`ADDED ${traitJobs.length} ${task.contract.slug} OPENSEA TRAIT BID JOBS TO QUEUE`);
     } else if (task.bidType.toLowerCase() === "collection" && !traitBid) {
@@ -1953,7 +1979,7 @@ async function processBlurScheduledBid(task: ITask) {
         opts: { priority: TRAIT_BID_PRIORITY.BLUR }
       }));
 
-      if (task.running) await processBulkJobs(traitJobs);
+      if (task.running) await processBulkJobs(traitJobs, true);
 
       console.log(`ADDED ${traitJobs.length} ${task.contract.slug} BLUR TRAIT BID JOBS TO QUEUE`);
     } else if (task.bidType.toLowerCase() === "collection" && !traitBid) {
@@ -2222,7 +2248,7 @@ async function processMagicedenScheduledBid(task: ITask) {
           opts: { priority: TOKEN_BID_PRIORITY.MAGICEDEN }
         }));
 
-      if (task.running) await processBulkJobs(jobs);
+      if (task.running) await processBulkJobs(jobs, true);
 
       console.log(`ADDED ${jobs.length} ${task.contract.slug} MAGICEDEN TOKEN BID JOBS TO QUEUE`);
     }
@@ -2246,7 +2272,7 @@ async function processMagicedenScheduledBid(task: ITask) {
         opts: { priority: TRAIT_BID_PRIORITY.MAGICEDEN }
       }));
 
-      if (task.running) await processBulkJobs(traitJobs);
+      if (task.running) await processBulkJobs(traitJobs, true);
 
       console.log(`ADDED ${traitJobs.length} ${task.contract.slug} MAGICEDEN TRAIT BID JOBS TO QUEUE`);
     }
