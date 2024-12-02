@@ -1,14 +1,17 @@
 import Bottleneck from "bottleneck";
 import axios, { AxiosInstance } from "axios";
 import axiosRetry, { IAxiosRetryConfig } from "axios-retry";
+import { config } from "dotenv";
+
+config()
 
 let limiter: Bottleneck;
 let axiosInstance: AxiosInstance;
 let API_KEY: string;
-let RATE_LIMIT: number = 64;
+let RATE_LIMIT: number = Number(process.env.RATE_LIMIT);
 
 async function fetchRateLimitFromDatabase() {
-  return { rateLimit: 64, apiKey: "d3348cw68-097d-48b5-b5f0-0313cc05e92d" };
+  return { rateLimit: 64, apiKey: process.env.API_KEY as string };
 }
 
 const retryConfig: IAxiosRetryConfig = {
