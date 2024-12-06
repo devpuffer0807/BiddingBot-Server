@@ -5,7 +5,6 @@ import { DistributedLockManager } from './lock';
 
 // Constants
 const CACHE_EXPIRY_SECONDS = 60;
-const MAX_QUEUE_SIZE = 64;
 const BLUR_POOL_ADDRESS = "0x0000000000A39bb272e79075ade125fd351887Ac";
 
 // Environment configuration
@@ -113,7 +112,7 @@ class BalanceChecker {
               console.error("Error in WETH balance fetch after retries:", error);
               return cachedBalance ?? 0;
             }
-            const backoffTime = Math.pow(2, attempt) * 100; // Exponential backoff
+            const backoffTime = Math.pow(2, attempt) * 1000; // Exponential backoff
             await new Promise(resolve => setTimeout(resolve, backoffTime));
           }
         }
@@ -171,7 +170,7 @@ class BalanceChecker {
               console.error("Error fetching BETH balance after retries:", error);
               return cachedBalance ?? 0;
             }
-            const backoffTime = Math.pow(2, attempt) * 100; // Exponential backoff
+            const backoffTime = Math.pow(2, attempt) * 1000; // Exponential backoff
             await new Promise(resolve => setTimeout(resolve, backoffTime));
           }
         }

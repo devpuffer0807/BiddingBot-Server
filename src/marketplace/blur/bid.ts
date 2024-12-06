@@ -4,10 +4,10 @@ import redisClient from "../../utils/redis";
 import { BLUR_SCHEDULE, BLUR_TRAIT_BID, currentTasks, queue, RESET } from "../..";
 import { config } from "dotenv";
 import { createBalanceChecker } from "../../utils/balance";
-import { Queue } from "bullmq";
+import { Job, Queue } from "bullmq";
 import { DistributedLockManager } from "../../utils/lock";
 const RED = '\x1b[31m';
-
+const YELLOW = '\x1b[33m';
 
 config()
 
@@ -16,7 +16,7 @@ const API_KEY = process.env.API_KEY as string;
 const BLUR_API_URL = 'https://api.nfttools.website/blur';
 const redis = redisClient.getClient();
 
-const ALCHEMY_API_KEY = "0rk2kbu11E5PDyaUqX1JjrNKwG7s4ty5"
+const ALCHEMY_API_KEY = "HGWgCONolXMB2op5UjPH1YreDCwmSbvx"
 
 
 const deps = {
@@ -71,19 +71,17 @@ export async function bidOnBlur(
     console.log(RED + '-----------------------------------------------------------------------------------------------------------' + RESET);
 
     //   // Remove all Blur jobs from the queue
-    const jobs = await queue.getJobs(['waiting', 'delayed', 'failed', 'paused', 'prioritized', 'repeat', 'wait', 'waiting', 'waiting-children']);
+    const jobs: Job[] = await queue.getJobs(['waiting', 'delayed', 'failed', 'paused', 'prioritized', 'repeat', 'wait', 'waiting', 'waiting-children']);
     const blurJobs = jobs.filter(job =>
-      [BLUR_SCHEDULE, BLUR_TRAIT_BID].includes(job.name) &&
-      !job.lockKey // Only include jobs that aren't locked by a worker
+      [BLUR_SCHEDULE, BLUR_TRAIT_BID].includes(job.name)
     );
 
 
     if (blurJobs.length > 0) {
-      const results = await Promise.allSettled(blurJobs.map(job => job.remove()));
+      const results = await Promise.allSettled(blurJobs.map(job => job.moveToDelayed(Date.now() + (5 * 60 * 1000))));
       const removedCount = results.filter(result => result.status === 'fulfilled').length;
       const failedCount = results.filter(result => result.status === 'rejected').length;
-
-      console.log(RED + `Removed ${removedCount} Blur jobs from queue due to insufficient BETH balance (${failedCount} failed)`.toUpperCase() + RESET);
+      console.log(YELLOW + `DELAYING ${removedCount} BLUR JOB(S) BY 5 MINUTES DUE TO INSUFFICIENT BETH BALANCE (${failedCount} FAILED)` + RESET);
     }
     return
   }
@@ -141,7 +139,6 @@ export async function bidOnBlur(
 
   let data = build?.signatures?.[0];
   if (!data) {
-    console.error(`Invalid response, retrying... SLUG: ${slug} TRAITS: ${traits}`);
     build = await formatBidOnBlur(BLUR_API_URL, accessToken, wallet_address, buildPayload);
     data = build?.signatures?.[0];
   }
@@ -329,17 +326,16 @@ async function submitBidToBlur(
     }
   } catch (error: any) {
     if (error.response?.data?.message?.message === 'Balance over-utilized' || error.message.message === 'Balance over-utilized') {
-      const jobs = await queue.getJobs(['waiting', 'delayed', 'failed', 'paused', 'prioritized', 'repeat', 'wait', 'waiting', 'waiting-children']);
+      const jobs: Job[] = await queue.getJobs(['waiting', 'delayed', 'failed', 'paused', 'prioritized', 'repeat', 'wait', 'waiting', 'waiting-children']);
       const blurJobs = jobs.filter(job =>
-        [BLUR_SCHEDULE, BLUR_TRAIT_BID].includes(job.name) &&
-        !job.lockKey // Only include jobs that aren't locked by a worker
+        [BLUR_SCHEDULE, BLUR_TRAIT_BID].includes(job.name)
       );
 
       if (blurJobs.length > 0) {
-        const results = await Promise.allSettled(blurJobs.map(job => job.remove()));
+        const results = await Promise.allSettled(blurJobs.map(job => job.moveToDelayed(Date.now() + (5 * 60 * 1000))));
         const removedCount = results.filter(result => result.status === 'fulfilled').length;
         const failedCount = results.filter(result => result.status === 'rejected').length;
-        console.log(RED + `Removed ${removedCount} Blur jobs from queue due to insufficient BETH balance (${failedCount} failed)`.toUpperCase() + RESET);
+        console.log(YELLOW + `DELAYING ${removedCount} BLUR JOB(S) BY 5 MINUTES DUE TO INSUFFICIENT BETH BALANCE (${failedCount} FAILED)` + RESET);
       }
     } else {
       console.error("Error submitting bid:", error.response?.data || error.message);
@@ -366,7 +362,7 @@ export async function cancelBlurBid(data: BlurCancelPayload) {
     console.log(JSON.stringify(cancelResponse));
   } catch (error: any) {
     if (error.response?.data?.message?.message !== 'No bids found') {
-      console.log(error.response.data);
+      console.log("cancelBlurBid: ", error?.response?.data || error);
     }
   }
 }

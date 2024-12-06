@@ -5,6 +5,9 @@ import { BLUE, currentTasks, OPENSEA_SCHEDULE, OPENSEA_TOKEN_BID, OPENSEA_TRAIT_
 import redisClient from "../../utils/redis";
 import { config } from "dotenv";
 import { createBalanceChecker } from "../../utils/balance";
+import { Job } from "bullmq";
+
+
 
 config()
 
@@ -17,11 +20,12 @@ const CONDUIT_KEY = "0x0000007b02230091a7ed01230072f7006a004d60a8d4e71d599b81042
 const SEAPORT_1_6 = "0x0000000000000068f116a894984e2db1123eb395"
 const WETH_CONTRACT_ADDRESS = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
 const OPENSEA_FEE_ADDRESS = "0x0000a26b00c1F0DF003000390027140000fAa719"
-const ALCHEMY_API_KEY = "0rk2kbu11E5PDyaUqX1JjrNKwG7s4ty5"
+const ALCHEMY_API_KEY = "HGWgCONolXMB2op5UjPH1YreDCwmSbvx"
 const provider = new ethers.providers.AlchemyProvider('mainnet', ALCHEMY_API_KEY);
 const SEAPORT_CONTRACT = new ethers.Contract(SEAPORT_CONTRACT_ADDRESS, SEAPORT_MIN_ABI, provider);
 const RED = '\x1b[31m';
 const RESET = '\x1b[0m';
+const YELLOW = '\x1b[33m'; // Add this constant for yellow color
 
 const redis = redisClient.getClient();
 
@@ -149,7 +153,7 @@ async function buildItemOffer(offerSpecification: ItemOfferSpecification) {
       walletAddress
     } = offerSpecification
     const task = currentTasks.find((task) => task.contract.contractAddress.toLowerCase() === offerSpecification.assetContractAddress.toLowerCase() && task.selectedMarketplaces.includes("OpenSea"))
-    if (!task?.running) return
+    if (!task) return
 
     const consideration = await getItemConsideration(
       assetContractAddress,
@@ -207,7 +211,7 @@ export async function bidOnOpensea(
   asset?: { contractAddress: string, tokenId: number }
 ) {
   const task = currentTasks.find((task) => task.contract.slug.toLowerCase() === slug.toLowerCase() && task.selectedMarketplaces.includes("OpenSea"))
-  if (!task?.running) return
+  if (!task) return
   const divider = BigNumber.from(10000);
   const roundedNumber = Math.round(Number(offer_price) / 1e14) * 1e14;
   const offerPrice = BigNumber.from(roundedNumber.toString());
@@ -231,15 +235,14 @@ export async function bidOnOpensea(
     console.log(RED + `Total offers (${totalOffersWithNew} WETH) would exceed 1000x available WETH balance (${wethBalance * 1000} WETH). SKIPPING ...`.toUpperCase() + RESET);
     console.log(RED + '-----------------------------------------------------------------------------------------------------------' + RESET);
 
-    const jobs = await queue.getJobs(['waiting', 'delayed', 'failed', 'paused', 'prioritized', 'repeat', 'wait', 'waiting', 'waiting-children']);
-    const openseaJobs = jobs.filter(job =>
-      [OPENSEA_SCHEDULE, OPENSEA_TRAIT_BID, OPENSEA_TOKEN_BID].includes(job?.name) &&
-      !job?.lockKey // Only include jobs that aren't locked by a worker
+    const jobs = await queue.getJobs(['prioritized']);
+    const openseaJobs: Job[] = jobs.filter(job =>
+      [OPENSEA_SCHEDULE, OPENSEA_TRAIT_BID, OPENSEA_TOKEN_BID].includes(job?.name)
     );
 
     if (openseaJobs.length > 0) {
-      console.log(RED + `REMOVING ${openseaJobs.length} JOB(S) DUE TO OUTSTANDING ORDER TO WALLET BALANCE RATIO EXCEEDING ALLOWED LIMIT.` + RESET);
       await Promise.allSettled(openseaJobs.map(job => job.remove()));
+      console.log(RED + `DELAYING ${openseaJobs.length} OPENSEA JOB(S) DUE TO OUTSTANDING ORDER TO WALLET BALANCE RATIO EXCEEDING ALLOWED LIMIT.` + RESET);
     }
 
     return
@@ -265,6 +268,8 @@ export async function bidOnOpensea(
       priceWei: BigInt(roundedNumber)
     })
 
+    if (!offer) return
+
     const opensea_consideration = {
       itemType: 1,
       token: WETH_CONTRACT_ADDRESS,
@@ -274,9 +279,6 @@ export async function bidOnOpensea(
       recipient: OPENSEA_FEE_ADDRESS
     };
 
-    if (!offer) {
-      return
-    }
     offer.consideration.push(opensea_consideration);
     offer.totalOriginalConsiderationItems = (Number(offer.totalOriginalConsiderationItems) + 1).toString();
     for (const address in creator_fees) {
@@ -296,8 +298,12 @@ export async function bidOnOpensea(
       }
     }
 
+
     const itemSignature = await signOffer(wallet, offer)
-    const itemResponse = await postItemOffer(offer, itemSignature)
+
+    if (!itemSignature) return
+
+    const itemResponse = await postItemOffer(offer, itemSignature, slug)
     const itemOrderHash = itemResponse?.order?.order_hash
     const baseKey = `opensea:order:${slug}:${asset.tokenId}`;
 
@@ -425,7 +431,7 @@ export async function bidOnOpensea(
       payload.protocol_address = SEAPORT_1_6;
 
       const task = currentTasks.find((task) => task.contract.slug.toLowerCase() === slug.toLowerCase() && task.selectedMarketplaces.includes("OpenSea"))
-      if (!task?.running) return
+      if (!task) return
 
       await submitOfferToOpensea(taskId, private_key, slug, bidCount, payload, expiry, opensea_traits)
     } catch (error: any) {
@@ -441,7 +447,7 @@ export async function bidOnOpensea(
  */
 async function submitOfferToOpensea(taskId: string, privateKey: string, slug: string, bidCount: string, payload: IPayload, expiry = 900, opensea_traits?: string) {
   let task = currentTasks.find((task) => task.contract.slug.toLowerCase() === slug.toLowerCase() || task.selectedMarketplaces.includes("OpenSea"))
-  if (!task?.running) return
+  if (!task) return
   try {
     const { data: offer } = await
       limiter.schedule(() => axiosInstance.request<OpenseaOffer>({
@@ -476,7 +482,7 @@ async function submitOfferToOpensea(taskId: string, privateKey: string, slug: st
     console.log(BLUE, successMessage, RESET);
 
     task = currentTasks.find((task) => task?.contract?.slug.toLowerCase() === slug?.toLowerCase() && task?.selectedMarketplaces.includes("OpenSea"))
-    if (!task?.running) {
+    if (!task) {
       await new Promise(resolve => setTimeout(resolve, 500));
       await cancelOrder(order_hash, OPENSEA_PROTOCOL_ADDRESS, privateKey)
     }
@@ -485,15 +491,16 @@ async function submitOfferToOpensea(taskId: string, privateKey: string, slug: st
       error?.message?.errors?.[0] === 'Outstanding order to wallet balance ratio exceeds allowed limit.' ||
       error?.response?.data?.message === 'Outstanding order to wallet balance ratio exceeds allowed limit.' ||
       error?.message === 'Outstanding order to wallet balance ratio exceeds allowed limit.') {
-      const jobs = await queue.getJobs(['waiting', 'delayed', 'failed', 'paused', 'prioritized', 'repeat', 'wait', 'waiting', 'waiting-children']);
-      const openseaJobs = jobs.filter(job =>
-        [OPENSEA_SCHEDULE, OPENSEA_TRAIT_BID, OPENSEA_TOKEN_BID].includes(job?.name) &&
-        !job?.lockKey
+      const jobs = await queue.getJobs(['prioritized']);
+      const openseaJobs: Job[] = jobs.filter(job =>
+        [OPENSEA_SCHEDULE, OPENSEA_TRAIT_BID, OPENSEA_TOKEN_BID].includes(job?.name)
       );
 
       if (openseaJobs.length > 0) {
-        console.log(RED + `REMOVING ${openseaJobs.length} JOB(S) DUE TO OUTSTANDING ORDER TO WALLET BALANCE RATIO EXCEEDING ALLOWED LIMIT.` + RESET);
         await Promise.allSettled(openseaJobs.map(job => job.remove()));
+        console.log(RED + `DELAYING ${openseaJobs.length} OPENSEA JOB(S) DUE TO OUTSTANDING ORDER TO WALLET BALANCE RATIO EXCEEDING ALLOWED LIMIT.` + RESET);
+        // await Promise.allSettled(openseaJobs.map(job => job.moveToDelayed(Date.now() + (5 * 60 * 1000))));
+        // console.log(YELLOW + `DELAYING ${openseaJobs.length} OPENSEA JOB(S) BY 5 MINUTES DUE TO OUTSTANDING ORDER TO WALLET BALANCE RATIO EXCEEDING ALLOWED LIMIT.` + RESET);
       }
     } else {
       console.log("opensea post offer error", error?.response?.data || error?.message || error);
@@ -599,8 +606,7 @@ const getOffer = (priceWei: bigint) => {
   ]
 }
 
-async function postItemOffer(offer: unknown, signature: string) {
-
+async function postItemOffer(offer: unknown, signature: string, slug: string) {
   try {
     const payload = {
       parameters: offer,
@@ -614,26 +620,24 @@ async function postItemOffer(offer: unknown, signature: string) {
         'X-NFT-API-Key': API_KEY
       }
     }))
-
     return data
   } catch (error: any) {
-
     if (error?.response?.data?.message?.errors?.[0] === 'Outstanding order to wallet balance ratio exceeds allowed limit.' ||
       error?.message?.errors?.[0] === 'Outstanding order to wallet balance ratio exceeds allowed limit.' ||
       error?.response?.data?.message === 'Outstanding order to wallet balance ratio exceeds allowed limit.' ||
       error?.message === 'Outstanding order to wallet balance ratio exceeds allowed limit.') {
-      const jobs = await queue.getJobs(['waiting', 'delayed', 'failed', 'paused', 'prioritized', 'repeat', 'wait', 'waiting', 'waiting-children']);
-      const openseaJobs = jobs.filter(job =>
-        [OPENSEA_SCHEDULE, OPENSEA_TRAIT_BID, OPENSEA_TOKEN_BID].includes(job?.name) &&
-        !job?.lockKey
+      const jobs = await queue.getJobs(['prioritized']);
+      const openseaJobs: Job[] = jobs.filter(job =>
+        [OPENSEA_SCHEDULE, OPENSEA_TRAIT_BID, OPENSEA_TOKEN_BID].includes(job?.name)
       );
 
       if (openseaJobs.length > 0) {
-        console.log(RED + `REMOVING ${openseaJobs.length} JOB(S) DUE TO OUTSTANDING ORDER TO WALLET BALANCE RATIO EXCEEDING ALLOWED LIMIT.` + RESET);
         await Promise.allSettled(openseaJobs.map(job => job.remove()));
+        console.log(RED + `DELAYING ${openseaJobs.length} OPENSEA JOB(S) DUE TO OUTSTANDING ORDER TO WALLET BALANCE RATIO EXCEEDING ALLOWED LIMIT.` + RESET);
+
+        // await Promise.allSettled(openseaJobs.map(job => job.moveToDelayed(Date.now() + (5 * 60 * 1000))));
+        // console.log(YELLOW + `DELAYING ${openseaJobs.length} OPENSEA JOB(S) BY 5 MINUTES DUE TO OUTSTANDING ORDER TO WALLET BALANCE RATIO EXCEEDING ALLOWED LIMIT.` + RESET);
       }
-    } else {
-      console.log("opensea post item offer error", error?.response?.data || error?.message || error);
     }
   }
 }
@@ -695,6 +699,9 @@ export async function fetchOpenseaOffers(
 
       const bestOffer = filteredOffers[0];
       const offers = bestOffer.price.value;
+
+      // filter by all address in 
+      // if we o
 
       const quantity = bestOffer.protocol_data.parameters.consideration.find((item: any) => item.token.toLowerCase() === contractAddress.toLowerCase()).startAmount;
 

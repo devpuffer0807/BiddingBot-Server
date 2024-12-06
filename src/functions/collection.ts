@@ -38,6 +38,11 @@ export async function getCollectionDetails(slug: string) {
           }
         ));
 
+      // Add validation for collection data
+      if (!collection || !collection.editors || !collection.contracts) {
+        throw new Error('Invalid collection data received from API');
+      }
+
       let creator_fees;
       let enforceCreatorFee = false;
       if (collection?.fees?.length > 1) {
@@ -64,8 +69,14 @@ export async function getCollectionDetails(slug: string) {
       collectionCache[slug] = result;
       return result;
     } catch (error: any) {
-      console.log('🌵💜🐢 error', error.response.data);
-      throw error;
+      // Improved error logging
+      console.error('Error fetching collection details:', {
+        slug,
+        error: error?.response?.data || error.message || error
+      });
+
+      // Rethrow with a more specific message
+      throw new Error(`Failed to fetch collection details for ${slug}: ${error?.response?.data?.message || error.message || 'Unknown error'}`);
     }
   });
 

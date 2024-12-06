@@ -11,7 +11,7 @@ let API_KEY: string;
 let RATE_LIMIT: number = Number(process.env.RATE_LIMIT);
 
 async function fetchRateLimitFromDatabase() {
-  return { rateLimit: 64, apiKey: process.env.API_KEY as string };
+  return { rateLimit: Number(process.env.RATE_LIMIT), apiKey: process.env.API_KEY as string };
 }
 
 const retryConfig: IAxiosRetryConfig = {

@@ -13,7 +13,7 @@ const RESET = '\x1b[0m';
 config()
 
 const API_KEY = process.env.API_KEY
-const ALCHEMY_API_KEY = "0rk2kbu11E5PDyaUqX1JjrNKwG7s4ty5"
+const ALCHEMY_API_KEY = "HGWgCONolXMB2op5UjPH1YreDCwmSbvx"
 const provider = new ethers.providers.AlchemyProvider('mainnet', ALCHEMY_API_KEY);
 
 const redis = redisClient.getClient();
@@ -57,7 +57,7 @@ export async function bidOnMagiceden(
   try {
 
     const task = currentTasks.find((task) => task.contract.slug.toLowerCase() === slug.toLowerCase() && task.selectedMarketplaces.includes("MagicEden"))
-    if (!task?.running) return
+    if (!task) return
 
     const bidExpiry = await getExpiry(task.bidDuration)
     const duration = bidExpiry / 60 || 15; // minutes
@@ -78,12 +78,9 @@ export async function bidOnMagiceden(
 
     const order = await createBidData(slug, maker, collection, quantity, weiPrice.toString(), expiration.toString(), trait, tokenId);
 
-    if (!order) {
-      const details = tokenId ? `TOKEN: ${tokenId}` : trait ? `TRAIT: ${trait.attributeKey}=${trait.attributeValue}` : 'COLLECTION WIDE';
-      console.log(RED, `[MAGICEDEN] Failed to create bid for ${slug.toUpperCase()} - ${details}`.toUpperCase(), RESET);
-      return
 
-    }
+
+    if (!order) return
     try {
       if (tokenId) {
         await submitSignedOrderData(taskId, weiPrice, privateKey, bidCount, order, wallet, slug, expiry, undefined, tokenId)
@@ -123,8 +120,9 @@ async function createBidData(
   tokenId?: number | string,
 ) {
 
-  const task = currentTasks.find((task) => task.contract.slug.toLowerCase() === slug.toLowerCase() && task.selectedMarketplaces.includes("MagicEden"))
-  if (!task?.running) return
+  const task = currentTasks.find((task) => task.contract.slug.toLowerCase() === slug.toLowerCase() && task.selectedMarketplaces.map((marketplace) => marketplace.toLowerCase()).includes("magiceden"))
+
+  if (!task) return
 
   const bidExpiry = await getExpiry(task.bidDuration)
   const duration = bidExpiry / 60 || 15; // minutes
@@ -164,7 +162,6 @@ async function createBidData(
     source: "magiceden.us",
     params: params
   };
-
 
   try {
     const { data: order } = await limiter.schedule(() => axiosInstance.post<CreateBidData>(
@@ -251,13 +248,13 @@ async function signOrderData(wallet: ethers.Wallet, signData: any, trait?: Trait
 * @param trait - Collection trait
  * @returns The response from the API.
  */
-async function sendSignedOrderData(taskId: string, offerPrice: string | number, privateKey: string, bidCount: string, signature: string, data: any, slug: string, expiry: number = 900, trait?: Trait, tokenId?: number | string) {
+async function sendSignedOrderData(order: any, taskId: string, offerPrice: string | number, privateKey: string, bidCount: string, signature: string, data: any, slug: string, expiry: number = 900, trait?: Trait, tokenId?: number | string) {
   try {
     const task = await currentTasks.find((task) =>
       task.contract.slug.toLowerCase() === slug.toLowerCase() &&
       task.selectedMarketplaces.includes("MagicEden")
     )
-    if (!task?.running) return
+    if (!task) return
 
     const endpoint = trait || tokenId
       ? "https://api.nfttools.website/magiceden/v3/rtp/ethereum/order/v3"
@@ -292,7 +289,7 @@ async function sendSignedOrderData(taskId: string, offerPrice: string | number, 
       const order = JSON.stringify(offerResponse);
       const task = currentTasks.find((task) => task.contract.slug.toLowerCase() === slug.toLowerCase() && task.selectedMarketplaces.includes("MagicEden"))
 
-      if (!task?.running) {
+      if (!task) {
         return await cancelMagicEdenBid([order], privateKey)
       }
       const key = `${bidCount}:${baseKey}`;
@@ -312,12 +309,12 @@ async function sendSignedOrderData(taskId: string, offerPrice: string | number, 
 
 
       console.log(MAGENTA, successMessage, RESET);
-      if (!task?.running) {
+      if (!task) {
         await cancelMagicEdenBid([order], privateKey)
       }
       return offerResponse;
     } catch (error: any) {
-      console.error('Error saving to Redis:', error.response.data);
+      console.error(error.response.data); // Inavlid marketplace fee error
     }
   } catch (error: any) {
     console.error('Error in sendSignedOrderData:', error.response.data);
@@ -345,7 +342,34 @@ const extractAddress = (message: string): string | null => {
  */
 export async function submitSignedOrderData(taskId: string, offerPrice: string | number, privateKey: string, bidCount: string, order: CreateBidData, wallet: ethers.Wallet, slug: string, expiry = 900, trait?: Trait, tokenId?: number | string) {
   const task = currentTasks.find((task) => task.contract.slug.toLowerCase() === slug.toLowerCase() && task.selectedMarketplaces.includes("MagicEden"))
-  if (!task?.running) return
+  if (!task) return
+
+  order.steps.forEach((step) => {
+    step.items.forEach((item) => {
+      if (item.data?.post?.body) {
+        item.data.post.body.source = "magiceden.us";
+      }
+    });
+  });
+
+  order.steps.forEach((step) => {
+    step.items.forEach((item) => {
+      if (item.data?.sign?.value?.consideration) {
+        item.data.sign.value.consideration.forEach((considerationItem) => {
+          if (considerationItem.recipient.toLowerCase() === "0x6fa303e72bed54f515a513496f922bc331e2f27e".toLowerCase()) {
+            considerationItem.recipient = "0xca9337244b5f04cb946391bc8b8a980e988f9a6a";
+          }
+        });
+      }
+      if (item.data?.post?.body?.order?.data?.consideration) {
+        item.data.post.body.order.data.consideration.forEach((considerationItem) => {
+          if (considerationItem.recipient.toLowerCase() === "0x6fa303e72bed54f515a513496f922bc331e2f27e".toLowerCase()) {
+            considerationItem.recipient = "0xca9337244b5f04cb946391bc8b8a980e988f9a6a".toLowerCase();
+          }
+        });
+      }
+    });
+  });
 
   try {
     const signData = order?.steps
@@ -414,17 +438,9 @@ export async function submitSignedOrderData(taskId: string, offerPrice: string |
         console.error('Sign data not found in order steps.');
       }
     }
-    const result = await sendSignedOrderData(taskId, offerPrice, privateKey, bidCount, signature, data, slug, expiry, trait, tokenId);
+    const result = await sendSignedOrderData(order, taskId, offerPrice, privateKey, bidCount, signature, data, slug, expiry, trait, tokenId);
     return result;
   } catch (error: any) {
-    const errorDetails = {
-      slug,
-      trait: trait ? JSON.stringify(trait) : undefined,
-      tokenId,
-      error: error?.message || 'Unknown error',
-      response: error?.response?.data
-    };
-    console.error('Error in submitSignedOrderData:', errorDetails);
     return null;
   }
 
@@ -845,26 +861,19 @@ interface StepItem {
         verifyingContract: string;
       };
       types: {
-        CollectionOfferApproval: {
-          name: string;
-          type: string;
-        }[];
+        CollectionOfferApproval: { name: string; type: string; }[];
       };
       value: {
-        protocol: number;
-        cosigner: string;
-        buyer: string;
-        beneficiary: string;
-        marketplace: string;
-        fallbackRoyaltyRecipient: string;
-        paymentMethod: string;
-        tokenAddress: string;
-        amount: string;
-        itemPrice: string;
-        expiration: string;
-        marketplaceFeeNumerator: string;
-        nonce: string;
-        masterNonce: string;
+        protocol?: number;
+        cosigner?: string;
+        buyer?: string;
+        consideration?: Array<{
+          recipient: string;
+          [key: string]: any;
+        }>;
+        r: string;
+        s: string;
+        v: number;
       };
       primaryType: string;
     };
@@ -872,34 +881,14 @@ interface StepItem {
       endpoint: string;
       method: string;
       body: {
-        items: {
-          order: {
-            kind: string;
-            data: {
-              kind: string;
-              protocol: number;
-              cosigner: string;
-              sellerOrBuyer: string;
-              marketplace: string;
-              paymentMethod: string;
-              tokenAddress: string;
-              amount: string;
-              itemPrice: string;
-              expiration: string;
-              marketplaceFeeNumerator: string;
-              nonce: string;
-              masterNonce: string;
-              fallbackRoyaltyRecipient: string;
-              beneficiary: string;
-              v: number;
-              r: string;
-              s: string;
-            };
+        order?: {
+          data: {
+            consideration?: Array<{
+              recipient: string;
+              [key: string]: any;
+            }>;
           };
-          collection: string;
-          isNonFlagged: boolean;
-          orderbook: string;
-        }[];
+        };
         source: string;
       };
     };
