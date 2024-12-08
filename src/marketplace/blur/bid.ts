@@ -70,18 +70,16 @@ export async function bidOnBlur(
     console.log(RED + `Total offers (${totalOffersWithNew} BETH) would exceed 200x available BETH balance (${bethBalance * 200} BETH). SKIPPING ...`.toUpperCase() + RESET);
     console.log(RED + '-----------------------------------------------------------------------------------------------------------' + RESET);
 
-    //   // Remove all Blur jobs from the queue
-    const jobs: Job[] = await queue.getJobs(['waiting', 'delayed', 'failed', 'paused', 'prioritized', 'repeat', 'wait', 'waiting', 'waiting-children']);
+    const jobs: Job[] = await queue.getJobs(['prioritized']);
     const blurJobs = jobs.filter(job =>
       [BLUR_SCHEDULE, BLUR_TRAIT_BID].includes(job.name)
     );
 
-
     if (blurJobs.length > 0) {
-      const results = await Promise.allSettled(blurJobs.map(job => job.moveToDelayed(Date.now() + (5 * 60 * 1000))));
-      const removedCount = results.filter(result => result.status === 'fulfilled').length;
-      const failedCount = results.filter(result => result.status === 'rejected').length;
-      console.log(YELLOW + `DELAYING ${removedCount} BLUR JOB(S) BY 5 MINUTES DUE TO INSUFFICIENT BETH BALANCE (${failedCount} FAILED)` + RESET);
+      await queue.pause()
+      await Promise.all(blurJobs.map(job => job.remove()));
+      console.log(RED + `REMOVING ${blurJobs.length} BLUR JOB(S) DUE TO INSUFFICIENT BETH BALANCE)` + RESET);
+      await queue.resume()
     }
     return
   }
@@ -326,16 +324,16 @@ async function submitBidToBlur(
     }
   } catch (error: any) {
     if (error.response?.data?.message?.message === 'Balance over-utilized' || error.message.message === 'Balance over-utilized') {
-      const jobs: Job[] = await queue.getJobs(['waiting', 'delayed', 'failed', 'paused', 'prioritized', 'repeat', 'wait', 'waiting', 'waiting-children']);
+      const jobs: Job[] = await queue.getJobs(['prioritized']);
       const blurJobs = jobs.filter(job =>
         [BLUR_SCHEDULE, BLUR_TRAIT_BID].includes(job.name)
       );
 
       if (blurJobs.length > 0) {
-        const results = await Promise.allSettled(blurJobs.map(job => job.moveToDelayed(Date.now() + (5 * 60 * 1000))));
-        const removedCount = results.filter(result => result.status === 'fulfilled').length;
-        const failedCount = results.filter(result => result.status === 'rejected').length;
-        console.log(YELLOW + `DELAYING ${removedCount} BLUR JOB(S) BY 5 MINUTES DUE TO INSUFFICIENT BETH BALANCE (${failedCount} FAILED)` + RESET);
+        await queue.pause()
+        await Promise.all(blurJobs.map(job => job.remove()));
+        console.log(RED + `DELAYING ${blurJobs.length} BLUR JOB(S) BY 5 MINUTES DUE TO INSUFFICIENT BETH BALANCE` + RESET);
+        await queue.resume()
       }
     } else {
       console.error("Error submitting bid:", error.response?.data || error.message);

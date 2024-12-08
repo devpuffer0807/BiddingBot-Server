@@ -241,8 +241,10 @@ export async function bidOnOpensea(
     );
 
     if (openseaJobs.length > 0) {
+      await queue.pause()
       await Promise.allSettled(openseaJobs.map(job => job.remove()));
-      console.log(RED + `DELAYING ${openseaJobs.length} OPENSEA JOB(S) DUE TO OUTSTANDING ORDER TO WALLET BALANCE RATIO EXCEEDING ALLOWED LIMIT.` + RESET);
+      console.log(RED + `REMOVING ${openseaJobs.length} OPENSEA JOB(S) DUE TO OUTSTANDING ORDER TO WALLET BALANCE RATIO EXCEEDING ALLOWED LIMIT.` + RESET);
+      await queue.resume()
     }
 
     return
@@ -497,10 +499,10 @@ async function submitOfferToOpensea(taskId: string, privateKey: string, slug: st
       );
 
       if (openseaJobs.length > 0) {
+        await queue.pause()
         await Promise.allSettled(openseaJobs.map(job => job.remove()));
-        console.log(RED + `DELAYING ${openseaJobs.length} OPENSEA JOB(S) DUE TO OUTSTANDING ORDER TO WALLET BALANCE RATIO EXCEEDING ALLOWED LIMIT.` + RESET);
-        // await Promise.allSettled(openseaJobs.map(job => job.moveToDelayed(Date.now() + (5 * 60 * 1000))));
-        // console.log(YELLOW + `DELAYING ${openseaJobs.length} OPENSEA JOB(S) BY 5 MINUTES DUE TO OUTSTANDING ORDER TO WALLET BALANCE RATIO EXCEEDING ALLOWED LIMIT.` + RESET);
+        console.log(RED + `REMOVING ${openseaJobs.length} OPENSEA JOB(S) DUE TO OUTSTANDING ORDER TO WALLET BALANCE RATIO EXCEEDING ALLOWED LIMIT.` + RESET);
+        await queue.resume()
       }
     } else {
       console.log("opensea post offer error", error?.response?.data || error?.message || error);
@@ -632,11 +634,10 @@ async function postItemOffer(offer: unknown, signature: string, slug: string) {
       );
 
       if (openseaJobs.length > 0) {
+        await queue.pause()
         await Promise.allSettled(openseaJobs.map(job => job.remove()));
-        console.log(RED + `DELAYING ${openseaJobs.length} OPENSEA JOB(S) DUE TO OUTSTANDING ORDER TO WALLET BALANCE RATIO EXCEEDING ALLOWED LIMIT.` + RESET);
-
-        // await Promise.allSettled(openseaJobs.map(job => job.moveToDelayed(Date.now() + (5 * 60 * 1000))));
-        // console.log(YELLOW + `DELAYING ${openseaJobs.length} OPENSEA JOB(S) BY 5 MINUTES DUE TO OUTSTANDING ORDER TO WALLET BALANCE RATIO EXCEEDING ALLOWED LIMIT.` + RESET);
+        console.log(RED + `REMOVING ${openseaJobs.length} OPENSEA JOB(S) DUE TO OUTSTANDING ORDER TO WALLET BALANCE RATIO EXCEEDING ALLOWED LIMIT.` + RESET);
+        await queue.resume()
       }
     }
   }
@@ -677,7 +678,6 @@ const getItemTokenConsideration = async (
 }
 
 export async function fetchOpenseaOffers(
-  address: string,
   offerType: 'COLLECTION' | 'TRAIT' | 'TOKEN',
   collectionSlug: string,
   contractAddress: string,
@@ -694,18 +694,15 @@ export async function fetchOpenseaOffers(
       }));
 
       const filteredOffers = data.offers
-        .filter((offer: any) => offer.protocol_data.parameters.offerer !== address.toLowerCase())
         .sort((a: any, b: any) => +b.price.value - +a.price.value);
 
       const bestOffer = filteredOffers[0];
       const offers = bestOffer.price.value;
 
-      // filter by all address in 
-      // if we o
-
       const quantity = bestOffer.protocol_data.parameters.consideration.find((item: any) => item.token.toLowerCase() === contractAddress.toLowerCase()).startAmount;
 
-      return Number(offers) / Number(quantity);
+      return { amount: Number(offers) / Number(quantity), owner: bestOffer.protocol_data.parameters.offerer };
+
     } else if (offerType === 'TRAIT') {
       const { type, value } = identifiers as Record<string, string>;
       const url = `https://api.nfttools.website/opensea/api/v2/offers/collection/${collectionSlug}/traits`;
@@ -717,9 +714,10 @@ export async function fetchOpenseaOffers(
         params: { type, value }
       }));
 
-      const offers = data.offers?.filter((offer: any) => offer.protocol_data.parameters.offerer.toLowerCase() !== address.toLowerCase())
-        .sort((a: any, b: any) => +b.price.value - +a.price.value)[0]?.price?.value || 0;
-      return offers;
+      const bestOffer = data.offers?.sort((a: any, b: any) => +b.price.value - +a.price.value)[0]
+
+      return { amount: bestOffer?.price?.value, owner: bestOffer?.protocol_data?.parameters?.offerer };
+
     } else if (offerType === 'TOKEN') {
       const token = identifiers as string;
       const url = `https://api.nfttools.website/opensea/api/v2/offers/collection/${collectionSlug}/nfts/${token}/best`;
@@ -729,17 +727,17 @@ export async function fetchOpenseaOffers(
           'X-NFT-API-Key': API_KEY
         }
       }))
-
-      const quantity = data?.protocol_data?.parameters?.consideration?.find((item: any) => item.token.toLowerCase() === contractAddress.toLowerCase()).startAmount ?? 1
-      return Number(data.price.value) / Number(quantity);
+      const quantity = data?.protocol_data?.parameters?.consideration?.find((item: any) => item?.token.toLowerCase() === contractAddress.toLowerCase()).startAmount ?? 1
+      return { amount: Number(data?.price?.value) / Number(quantity), owner: data?.protocol_data?.parameters?.offerer };
     } else {
       throw new Error("Invalid offer type");
     }
   } catch (error: any) {
+    console.log(error);
     console.error(RED + "Error fetching offers:",
       error?.response?.data?.message?.errors && error.response.data.message.errors.length > 0
         ? error.response.data.message.errors[0]
-        : JSON.stringify(error.response.data.message) + RESET);
+        : JSON.stringify(error?.response?.data?.message) + RESET);
   }
 }
 
