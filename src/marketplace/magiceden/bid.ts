@@ -547,7 +547,7 @@ export async function fetchMagicEdenOffer(type: "COLLECTION" | "TRAIT" | "TOKEN"
       }
 
       const { data } = await limiter.schedule(() =>
-        axiosInstance.get(URL, {
+        axiosInstance.get<MagicedenCollectionResponse>(URL, {
           params: queryParams,
           headers: {
             'content-type': 'application/json',
@@ -556,8 +556,9 @@ export async function fetchMagicEdenOffer(type: "COLLECTION" | "TRAIT" | "TOKEN"
         })
       );
 
-      const offer = data.orders.filter((order: any) => order.maker.toLowerCase() !== walletAddress.toLocaleLowerCase())[0].price
-      return offer
+      const offer = data?.orders[0]
+      if (!offer) return null
+      return { amount: offer.price.amount.raw, owner: offer.maker }
 
     } else if (type === "TOKEN") {
       const queryParams = {
@@ -1045,4 +1046,79 @@ interface MagicEdenTokenFeeBreakdown {
 interface MagicEdenTokenResponse {
   orders: MagicEdenTokenOrder[];
   continuation: string | null;
+}
+
+interface MagicedenCollectionOrder {
+  id: string;
+  kind: string;
+  side: string;
+  status: string;
+  tokenSetId: string;
+  tokenSetSchemaHash: string;
+  contract: string;
+  contractKind: string;
+  maker: string;
+  taker: string;
+  price: {
+    currency: {
+      contract: string;
+      name: string;
+      symbol: string;
+      decimals: number;
+    };
+    amount: {
+      raw: string;
+      decimal: number;
+      usd: number;
+      native: number;
+    };
+    netAmount: {
+      raw: string;
+      decimal: number;
+      usd: number;
+      native: number;
+    };
+  };
+  validFrom: number;
+  validUntil: number;
+  quantityFilled: number;
+  quantityRemaining: number;
+  criteria: {
+    kind: string;
+    data: {
+      collection: {
+        id: string;
+        name: string;
+        image: string;
+      };
+    };
+  };
+  source: {
+    id: string;
+    domain: string;
+    name: string;
+    icon: string;
+    url: string;
+  };
+  feeBps: number;
+  feeBreakdown: Array<{
+    kind: string;
+    recipient: string;
+    bps: number;
+  }>;
+  expiration: number;
+  isReservoir: boolean | null;
+  createdAt: string;
+  updatedAt: string;
+  originatedAt: string | null;
+  isNativeOffChainCancellable: boolean;
+  depth: Array<{
+    price: number;
+    quantity: number;
+  }>;
+}
+
+interface MagicedenCollectionResponse {
+  orders: MagicedenCollectionOrder[];
+  continuation: string;
 }
