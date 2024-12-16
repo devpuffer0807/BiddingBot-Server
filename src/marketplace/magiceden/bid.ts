@@ -1,10 +1,11 @@
 import { ethers, Wallet } from "ethers";
 import { axiosInstance, limiter } from "../../init";
 import { config } from "dotenv";
-import { currentTasks, MAGENTA } from "../..";
+import { currentTasks, MAGENTA, trackBidRate } from "../..";
 import redisClient from "../../utils/redis";
 import { createBalanceChecker } from "../../utils/balance";
 import { DistributedLockManager } from '../../utils/lock';
+import { isAddress } from "ethers/lib/utils";
 
 const RED = '\x1b[31m';
 const RESET = '\x1b[0m';
@@ -303,6 +304,8 @@ async function sendSignedOrderData(order: any, taskId: string, offerPrice: strin
       const offerKey = `${bidCount}:${redisKey}`
       await redis.setex(key, expiry, order);
       await redis.setex(offerKey, expiry, offerPrice.toString());
+
+      trackBidRate("magiceden")
       const countKey = `magiceden:${taskId}:count`;
 
       await redis.incr(countKey);
@@ -566,7 +569,7 @@ export async function fetchMagicEdenOffer(type: "COLLECTION" | "TRAIT" | "TOKEN"
         normalizeRoyalties: 'false'
       };
       const { data } = await limiter.schedule(() =>
-        axiosInstance.get(URL, {
+        axiosInstance.get<MagicEdenTokenResponse>(URL, {
           params: queryParams,
           headers: {
             'content-type': 'application/json',
@@ -575,8 +578,11 @@ export async function fetchMagicEdenOffer(type: "COLLECTION" | "TRAIT" | "TOKEN"
         })
       );
 
-      const offer = data?.orders?.filter((order: any) => order.maker.toLowerCase() !== walletAddress.toLocaleLowerCase())[0]?.price || 0
-      return offer
+      const offer = data?.orders?.filter((order) => order.source.domain === "magiceden.io")
+
+      if (!offer?.length) return null
+      return { amount: offer[0].price.amount.raw || 0, owner: offer[0].maker }
+
     }
   } catch (error: any) {
     console.log(error);
@@ -954,3 +960,89 @@ interface Trait {
   attributeValue: string;
 };
 
+
+
+interface MagicEdenTokenOrder {
+  id: string;
+  kind: string;
+  side: 'buy' | 'sell';
+  status: 'active' | string;
+  tokenSetId: string;
+  tokenSetSchemaHash: string;
+  contract: string;
+  contractKind: string;
+  maker: string;
+  taker: string;
+  price: MagicEdenTokenPrice;
+  validFrom: number;
+  validUntil: number;
+  quantityFilled: number;
+  quantityRemaining: number;
+  criteria: MagicEdenTokenCriteria;
+  source: MagicEdenTokenSource;
+  feeBps: number;
+  feeBreakdown: MagicEdenTokenFeeBreakdown[];
+  expiration: number;
+  isReservoir: boolean | null;
+  createdAt: string;
+  updatedAt: string;
+  originatedAt: string | null;
+  isNativeOffChainCancellable: boolean;
+}
+
+interface MagicEdenTokenPrice {
+  currency: MagicEdenTokenCurrency;
+  amount: MagicEdenTokenAmount;
+  netAmount: MagicEdenTokenAmount;
+}
+
+interface MagicEdenTokenCurrency {
+  contract: string;
+  name: string;
+  symbol: string;
+  decimals: number;
+}
+
+interface MagicEdenTokenAmount {
+  raw: string;
+  decimal: number;
+  usd: number;
+  native: number;
+}
+
+interface MagicEdenTokenCriteria {
+  kind: 'token' | 'collection' | 'attribute';
+  data: MagicEdenTokenCriteriaData;
+}
+
+interface MagicEdenTokenCriteriaData {
+  token?: {
+    tokenId: string;
+  };
+  collection?: {
+    id: string;
+  };
+  attribute?: {
+    key: string;
+    value: string;
+  };
+}
+
+interface MagicEdenTokenSource {
+  id: string;
+  domain: string;
+  name: string;
+  icon: string;
+  url: string;
+}
+
+interface MagicEdenTokenFeeBreakdown {
+  kind: 'marketplace' | 'royalty';
+  recipient: string;
+  bps: number;
+}
+
+interface MagicEdenTokenResponse {
+  orders: MagicEdenTokenOrder[];
+  continuation: string | null;
+}

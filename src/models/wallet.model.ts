@@ -2,7 +2,7 @@ import mongoose, { model, Model, Schema } from "mongoose";
 
 interface IWallet extends Document {
   _id: mongoose.Types.ObjectId;
-  user: mongoose.Types.ObjectId;
+  user: String;
   name: string;
   address: string;
   privateKey: string;
@@ -13,7 +13,7 @@ interface IWallet extends Document {
 
 const WalletSchema = new Schema<IWallet>(
   {
-    user: { type: Schema.Types.ObjectId, ref: "User", required: true },
+    user: { type: String, ref: "User", required: true },
     name: { type: String, required: true },
     address: { type: String, required: true },
     privateKey: { type: String, required: true },

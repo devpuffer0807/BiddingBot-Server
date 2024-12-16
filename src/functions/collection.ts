@@ -93,30 +93,29 @@ export async function getCollectionStats(collectionSlug: string) {
   if (cachedData) {
     return JSON.parse(cachedData);
   }
-
-  const lockKey = `collectionStats:lock:${collectionSlug}`;
-  const result = await lockManager.withLock(lockKey, async () => {
-    // Double-check cache after acquiring lock
-    const cachedDataAfterLock = await redis.get(cacheKey);
-    if (cachedDataAfterLock) {
-      return JSON.parse(cachedDataAfterLock);
-    }
-
-    const { data } = await limiter.schedule(() => axiosInstance.get<CollectionStats>(
-      `https://api.nfttools.website/opensea/api/v2/collections/${collectionSlug}/stats`,
-      {
-        headers: { 'X-NFT-API-Key': API_KEY }
+  const lockKey = `collectionStats:${collectionSlug}`;
+  const result = await lockManager.withLock<CollectionStats>(
+    lockKey,
+    async () => {
+      const cachedDataAfterLock = await redis.get(cacheKey);
+      if (cachedDataAfterLock) {
+        return JSON.parse(cachedDataAfterLock);
       }
-    ));
+      const { data } = await limiter.schedule(() => axiosInstance.get<CollectionStats>(
+        `https://api.nfttools.website/opensea/api/v2/collections/${collectionSlug}/stats`,
+        {
+          headers: { 'X-NFT-API-Key': API_KEY }
+        }
+      ));
 
-    await redis.setex(cacheKey, 30, JSON.stringify(data));
-    return data;
-  });
-
+      await redis.setex(cacheKey, 30, JSON.stringify(data));
+      return data;
+    },
+    30
+  );
   if (!result) {
     throw new Error('Failed to acquire lock for collection stats');
   }
-
   return result;
 }
 
