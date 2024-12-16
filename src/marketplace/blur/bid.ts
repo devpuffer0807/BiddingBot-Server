@@ -538,3 +538,18 @@ interface SubmitPayload {
   marketplaceData: string[];
   [key: string]: any; // Allow additional properties
 }
+
+
+interface BlurCollectionPriceLevel {
+  criteriaType: string;
+  criteriaValue: Record<string, any>;
+  price: string;
+  executableSize: number;
+  numberBidders: number;
+  bidderAddressesSample: string[];
+}
+
+interface BlurResponse {
+  success: boolean;
+  priceLevels: BlurCollectionPriceLevel[];
+}
