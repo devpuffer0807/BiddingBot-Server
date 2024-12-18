@@ -19,6 +19,7 @@ import redisClient from "./utils/redis";
 import { WETH_CONTRACT_ADDRESS, WETH_MIN_ABI } from "./constants";
 import { BigNumber, constants, Contract, ethers, utils, Wallet as Web3Wallet } from "ethers";
 import { DistributedLockManager } from "./utils/lock";
+import { ignoreTransaction } from "./utils";
 
 
 const SEAPORT = '0x1e0049783f008a0085193e00003d00cd54003c71';
@@ -167,6 +168,8 @@ worker.on('failed', (job, error) => {
     console.error(RED + `Job ${job.id} failed:`, error.message, RESET);
   }
 });
+
+worker.close();
 
 const MIN_BID_DURATION = 60
 // Add near the top with other imports
@@ -323,7 +326,10 @@ async function fetchCurrentTasks() {
       );
 
     console.log(`Created ${jobs.length} initial jobs`);
-    // await processBulkJobs(jobs);
+    
+    await processBulkJobs(jobs);
+    
+    worker.run();
 
     console.log(GREEN + '=== Task Initialization Complete ===\n' + RESET);
   } catch (error) {
@@ -955,11 +961,11 @@ async function cancelAllRelatedBids(task: ITask, marketplace?: string) {
   if (magicedenBids.length) console.log(`- MagicEden: ${magicedenBids.length} bids`.toUpperCase());
   if (blurBids.length) console.log(`- Blur: ${blurBids.length} bids`.toUpperCase());
 
-  if (!marketplace) {
-    await cancelOpenseaBids(openseaBids, task.wallet.privateKey, task.contract.slug, task);
-    await cancelMagicedenBids(magicedenBids, task.wallet.privateKey, task.contract.slug, task);
-    await cancelBlurBids(blurBids, task.wallet.privateKey, task.contract.slug, task);
-  }
+  // if (!marketplace) {
+  //   await cancelOpenseaBids(openseaBids, task.wallet.privateKey, task.contract.slug, task);
+  //   await cancelMagicedenBids(magicedenBids, task.wallet.privateKey, task.contract.slug, task);
+  //   await cancelBlurBids(blurBids, task.wallet.privateKey, task.contract.slug, task);
+  // }
 
   switch (marketplace?.toLowerCase()) {
     case OPENSEA.toLowerCase():
@@ -3857,17 +3863,19 @@ async function approveMarketplace(currency: string, marketplace: string, task: I
 
   return await lockManager.withLock(lockKey, async () => {
     try {
-      const provider = new ethers.providers.AlchemyProvider('mainnet', ALCHEMY_API_KEY);
-      const signer = new Web3Wallet(task.wallet.privateKey, provider);
-      const wethContract = new Contract(currency, WETH_MIN_ABI, signer);
-
-      let allowance = Number(await wethContract.allowance(task.wallet.address, marketplace)) / 1e18;
-      if (allowance > maxBidPriceEth) return true;
-
-      if (!task?.wallet.openseaApproval) {
-        console.log(`Approving WETH ${marketplace} as a spender for wallet ${task.wallet.address} with amount: ${constants.MaxUint256.toString()}...`.toUpperCase());
-        const tx = await wethContract.approve(marketplace, constants.MaxUint256);
-        await tx.wait();
+      if(!ignoreTransaction) {
+        const provider = new ethers.providers.AlchemyProvider('mainnet', ALCHEMY_API_KEY);
+        const signer = new Web3Wallet(task.wallet.privateKey, provider);
+        const wethContract = new Contract(currency, WETH_MIN_ABI, signer);
+  
+        let allowance = Number(await wethContract.allowance(task.wallet.address, marketplace)) / 1e18;
+        if (allowance > maxBidPriceEth) return true;
+  
+        if (!task?.wallet.openseaApproval) {
+          console.log(`Approving WETH ${marketplace} as a spender for wallet ${task.wallet.address} with amount: ${constants.MaxUint256.toString()}...`.toUpperCase());
+          const tx = await wethContract.approve(marketplace, constants.MaxUint256);
+          await tx.wait();
+      }
 
         const updateData = marketplace.toLowerCase() === SEAPORT.toLowerCase()
           ? { openseaApproval: true }
