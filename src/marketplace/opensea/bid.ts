@@ -726,6 +726,7 @@ export async function fetchOpenseaOffers(
         }
       }))
       const quantity = data?.protocol_data?.parameters?.consideration?.find((item: any) => item?.token.toLowerCase() === contractAddress.toLowerCase()).startAmount ?? 1
+
       return { amount: Number(data?.price?.value) / Number(quantity), owner: data?.protocol_data?.parameters?.offerer };
     } else {
       throw new Error("Invalid offer type");

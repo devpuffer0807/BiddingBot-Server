@@ -1,7 +1,7 @@
 import { BigNumber, ethers, utils, Wallet } from "ethers";
 import { axiosInstance, limiter, RATE_LIMIT } from "../../init";
 import redisClient from "../../utils/redis";
-import { BLUR_SCHEDULE, BLUR_TRAIT_BID, currentTasks, queue, RESET } from "../..";
+import { BLUR_SCHEDULE, BLUR_TRAIT_BID, currentTasks, queue, RESET, trackBidRate } from "../..";
 import { config } from "dotenv";
 import { createBalanceChecker } from "../../utils/balance";
 import { Job, Queue } from "bullmq";
@@ -319,6 +319,7 @@ async function submitBidToBlur(
       const key = `${bidCount}:${baseKey}`;
 
       await redis.setex(key, expiry, JSON.stringify(cancelPayload));
+      trackBidRate("blur")
       const countKey = `blur:${taskId}:count`;
       await redis.incr(countKey);
     }

@@ -43,7 +43,6 @@ async function initialize() {
   const { rateLimit, apiKey } = await fetchRateLimitFromDatabase();
   limiter = new Bottleneck({
     minTime: 1000 / rateLimit,
-    // maxConcurrent: rateLimit
   });
   axiosRetry(axiosInstance, retryConfig);
   API_KEY = apiKey
